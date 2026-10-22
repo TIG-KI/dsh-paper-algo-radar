@@ -73,6 +73,7 @@
 - **已验**：装入隔离 profile → 插件加载、三个工具注册、六条 exact 路由生效。
 - **还差**：`apply()` 里 `await store.load()` + `seedAlgorithms()` 是**加载期写盘**，违反 FR-10.5。见 §5.4，留给 T-18。
 - **验收**：E21 未过（见上）；E8 靠 `engines` 声明，未做运行时校验。
+  > 2026-10-22 复核：DSH 加载器本身会在 import 插件前校验 `engines.dsh`，不满足的 bundle 被跳过并列入 `skippedBundles`；插件侧补的是 `engines.node` 的激活前校验（`lib/engines.js`，失败零注册）。见 `test/engines.test.mjs`。
 
 #### T-02 · 存储改造：三键去重 + 原子写（6h）✅ **已完成**
 - **FR**：1.2 / 7.1 / 7.2

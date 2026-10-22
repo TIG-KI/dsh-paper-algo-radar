@@ -26,6 +26,7 @@ import { planImport } from './importer.js'
 import { discover as discoverSources, fetchArxivFullText, resolveArxiv, resolveDoi } from './sources.js'
 import { registerRadarCommand } from './command.js'
 import { registerPromptSection } from './prompt.js'
+import { assertNodeEngine, engineStateOf } from './engines.js'
 import { describeApprovalVerdict, requestWriteApproval } from './approval.js'
 import { UndoStack } from './undo.js'
 import { backupStatus, maybeDailyBackup } from './backup.js'
@@ -685,6 +686,7 @@ function buildState(store, options = {}) {
     dictVersion: dictVersionOf(store),
     tools: REGISTERED_TOOL_NAMES,
     prompt: PROMPT_STATE,
+    engines: ENGINE_STATE,
     migration: store.migration,
     algorithms,
     papers,
@@ -1303,6 +1305,8 @@ function buildStatusTool(getStore) {
           value.prompt?.registered
             ? `系统提示段：已注册（${value.prompt.name} @ ${value.prompt.order}）`
             : `系统提示段：未注册（${value.prompt?.reason ?? '未知原因'}）`,
+          `引擎：Node ${value.engines?.node?.runtime ?? '—'}（要求 ${value.engines?.node?.declared ?? '—'}）· ` +
+            `DSH ${value.engines?.dsh?.declared ?? '—'}（${value.engines?.dsh?.enforcedBy ?? '—'} 校验）`,
         ].filter((line) => line !== null)
         return [{ type: 'text', text: lines.join('\n') }]
       },
@@ -1347,6 +1351,7 @@ async function statusSnapshot(store) {
     guide: { enabled: GUIDE_ENABLED, dismissed: store.meta.get('guide')?.dismissed === true },
     tools: REGISTERED_TOOL_NAMES,
     prompt: PROMPT_STATE,
+    engines: ENGINE_STATE,
     command: COMMAND_STATE,
     capabilities: { write: WRITE_ENABLED, textRead: TEXT_READ_ENABLED },
     migration: store.migration,
@@ -3692,6 +3697,9 @@ let COMMAND_STATE = { registered: false, reason: '尚未加载' }
 /** FR-8.8 系统提示段的注册结果（`/state.prompt` 会带出去，便于宿主内验证）。 */
 let PROMPT_STATE = { registered: false, name: '', order: 0, reason: '尚未加载' }
 
+/** FR-10.2 引擎校验结果（`/state.engines` 会带出去）。 */
+let ENGINE_STATE = engineStateOf(process.versions.node)
+
 /** 写能力开关（`/state.capabilities.write` 会带出去）。 */
 let WRITE_ENABLED = true
 
@@ -3730,6 +3738,12 @@ const WRITE_ROUTE_PATHS = new Set([
 ])
 
 export async function apply(ctx, config = {}) {
+  // FR-10.2：engines.dsh 由宿主加载器在 import 本插件之前校验（不满足的 bundle 会被
+  // 跳过并列入 skippedBundles），能跑到这里说明 dsh 侧已经通过；engines.node 宿主不管，
+  // 必须在第一行拦住——失败时零注册、零读写，不留半加载状态。
+  ENGINE_STATE = engineStateOf(process.versions.node)
+  assertNodeEngine(process.versions.node, ENGINE_STATE.node)
+
   // FR-8.6 能力开关：writeEnabled=false 时**不注册任何写工具**，HTTP 写接口也拒绝。
   // 配置来自 profile 的 cordis.patch.yml（本插件零依赖，不引 schemastery）。
   const writeEnabled = config?.writeEnabled !== false
