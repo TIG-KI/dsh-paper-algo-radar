@@ -218,6 +218,36 @@ window.__ModuleLoader__.load({
         color: 'var(--dsw-alias-label-secondary)',
         marginRight: 4,
       },
+      panel: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        padding: '12px 14px',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: 'var(--dsw-radius-sm)',
+        background: 'var(--dsw-alias-bg-layer-2)',
+      },
+      fieldRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+      input: {
+        height: 24,
+        padding: '0 8px',
+        borderRadius: 'var(--dsw-radius-sm)',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-primary)',
+        fontFamily: 'inherit',
+        fontSize: 12,
+      },
+      linkBtn: {
+        border: 'none',
+        background: 'transparent',
+        padding: 0,
+        color: 'var(--dsw-alias-state-business-primary)',
+        fontFamily: 'inherit',
+        fontSize: 11.5,
+        cursor: 'pointer',
+        textDecoration: 'underline',
+      },
       foot: {
         marginTop: 'auto',
         paddingTop: 12,
@@ -1341,6 +1371,125 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * 生成报告面板（§7 FR-13.12 双入口）：工具栏与页脚都打开这一个面板，
+     * 面板只调 POST /report —— 与工具、命令共用同一服务方法 generateReport。
+     * 面板只显示路径/大小/章节，**不显示正文**（R13.2）。
+     */
+    function ReportPanel({ open, onClose }) {
+      const [mode, setMode] = React.useState('review')
+      const [scope, setScope] = React.useState('all')
+      const [field, setField] = React.useState('')
+      const [yearFrom, setYearFrom] = React.useState('')
+      const [yearTo, setYearTo] = React.useState('')
+      const [days, setDays] = React.useState('30')
+      const [busy, setBusy] = React.useState(false)
+      const [error, setError] = React.useState('')
+      const [result, setResult] = React.useState(null)
+
+      if (!open) return null
+
+      const submit = async () => {
+        setBusy(true)
+        setError('')
+        setResult(null)
+        try {
+          const payload = { mode, windowDays: Number(days) || 30 }
+          if (mode === 'insight') {
+            // RI-1：insight 的口径固定为领域
+            payload.scope = 'field'
+            payload.field = field.trim()
+          } else if (scope === 'field') {
+            payload.scope = 'field'
+            payload.field = field.trim()
+          } else if (scope === 'yearRange') {
+            payload.scope = 'yearRange'
+            if (yearFrom.trim() !== '') payload.yearFrom = Number(yearFrom)
+            if (yearTo.trim() !== '') payload.yearTo = Number(yearTo)
+          }
+          const body = await requestJson(BASE + '/report', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+          setResult(body)
+        } catch (err) {
+          setError(err?.message ?? String(err))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const modeBtn = (value, label) =>
+        h(
+          'button',
+          {
+            style: value === mode ? { ...S.btn, borderColor: 'var(--dsw-alias-state-business-primary)', color: 'var(--dsw-alias-label-primary)' } : S.btn,
+            onClick: () => setMode(value),
+          },
+          label
+        )
+
+      return h(
+        'div',
+        { style: S.panel, 'data-radar-report-panel': '1' },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          h('span', { style: { fontWeight: 600, fontSize: 12.5 } }, '生成 Markdown 报告'),
+          h('span', { style: S.spacer }),
+          h('button', { style: S.btn, onClick: onClose }, '关闭')
+        ),
+        h(
+          'div',
+          { style: S.fieldRow },
+          h('span', { style: S.fam }, '模式'),
+          modeBtn('review', '汇报（10 章）'),
+          modeBtn('decide', '决策（5 章）'),
+          modeBtn('insight', '洞察（5 节）'),
+          h('span', { style: { ...S.fam, marginLeft: 8 } }, '最近 N 天'),
+          h('input', { style: { ...S.input, width: 56 }, value: days, onChange: (e) => setDays(e.target.value) })
+        ),
+        h(
+          'div',
+          { style: S.fieldRow },
+          h('span', { style: S.fam }, '范围'),
+          h('button', { style: scope === 'all' ? { ...S.btn, color: 'var(--dsw-alias-label-primary)' } : S.btn, onClick: () => setScope('all') }, '全库'),
+          h('button', { style: scope === 'field' ? { ...S.btn, color: 'var(--dsw-alias-label-primary)' } : S.btn, onClick: () => setScope('field') }, '领域'),
+          h('button', { style: scope === 'yearRange' ? { ...S.btn, color: 'var(--dsw-alias-label-primary)' } : S.btn, onClick: () => setScope('yearRange') }, '年份区间'),
+          scope === 'field' || mode === 'insight'
+            ? h('input', { style: { ...S.input, width: 120 }, placeholder: '领域名（insight 必填）', value: field, onChange: (e) => setField(e.target.value) })
+            : null,
+          scope === 'yearRange'
+            ? h(
+                'span',
+                { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+                h('input', { style: { ...S.input, width: 62 }, placeholder: '起', value: yearFrom, onChange: (e) => setYearFrom(e.target.value) }),
+                h('span', { style: S.muted }, '–'),
+                h('input', { style: { ...S.input, width: 62 }, placeholder: '止', value: yearTo, onChange: (e) => setYearTo(e.target.value) })
+              )
+            : null,
+          h('span', { style: S.spacer }),
+          h('button', { style: S.btn, disabled: busy, onClick: submit }, busy ? '生成中…' : '生成')
+        ),
+        h(
+          'div',
+          { style: S.muted },
+          '报告写到 exports/reports/，内容不进入对话；同参数固定生成时间可复现；正文与证据片段不进报告。'
+        ),
+        error !== '' ? h('div', { style: { ...S.muted, color: 'var(--dsw-alias-state-business-primary)' } }, '生成失败：' + error) : null,
+        result !== null
+          ? h(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: 4 }, 'data-radar-report-result': '1' },
+              h('div', { style: { fontSize: 12 } }, `已生成 ${mode === 'decide' ? '决策' : mode === 'insight' ? '洞察' : '汇报'}报告（${result.scope}，${Math.round((result.bytes / 1024) * 10) / 10} KB）`),
+              h('div', { style: { fontFamily: mono, fontSize: 11, wordBreak: 'break-all' } }, result.path),
+              h('div', { style: S.muted }, '章节：' + result.sections.map((s) => `${s.n}. ${s.title}`).join(' / '))
+            )
+          : null
+      )
+    }
+
     /** 首次激活引导（FR-11.3）：一次性、可关，存在快照里。 */
     function GuideBar({ onDismiss }) {
       return h(
@@ -1451,6 +1600,7 @@ window.__ModuleLoader__.load({
     function RadarView() {
       const t = useT();
       const [showSamples, setShowSamples] = useState(false);
+      const [reportOpen, setReportOpen] = useState(false);
       const [state, reload] = useRadarState(showSamples);
       const [tab, setTab] = useState('rank');
       const [filter, setFilter] = useState('');
@@ -1618,11 +1768,13 @@ window.__ModuleLoader__.load({
               )
             : null,
           h('span', { style: S.spacer }),
+          h('button', { style: S.btn, onClick: () => setReportOpen((v) => !v), title: '生成 Markdown 报告（与页脚入口同一个面板）' }, '生成报告'),
           h('button', { style: S.btn, onClick: reload }, state.kind === 'loading' ? '读取中…' : '刷新')
         ),
         state.kind === 'ready' && state.value.guide?.enabled === true && state.value.guide?.dismissed !== true
           ? h(GuideBar, { onDismiss: dismissGuide })
           : null,
+        h(ReportPanel, { open: reportOpen, onClose: () => setReportOpen(false) }),
         body,
         h(SampleBanner, {
           count: state.kind === 'ready' ? state.value.sampleCount || 0 : 0,
@@ -1640,7 +1792,8 @@ window.__ModuleLoader__.load({
               { style: S.foot },
               h('span', null, '数据文件：' + state.value.storeFile),
               h('span', null, '口径：' + state.value.dictVersion),
-              h('span', null, '生成于：' + new Date(state.value.generatedAt).toLocaleTimeString())
+              h('span', null, '生成于：' + new Date(state.value.generatedAt).toLocaleTimeString()),
+              h('button', { style: S.linkBtn, onClick: () => setReportOpen(true), 'data-radar-report-entry': 'foot' }, '生成报告')
             )
           : null
         )

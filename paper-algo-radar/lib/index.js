@@ -12,9 +12,10 @@
  *  - 只用 Node 内建模块，不依赖任何 Harness 包。工作区目录安装的 bundle 是符号链接，
  *    裸包名（@deepseek-ai/*）在工作区路径下无法解析，零依赖是这种安装方式下唯一稳妥的做法。
  */
-import { copyFile, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { copyFile, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { buildMatchers, extract, codePointLength } from './extract.js'
 import { migrateSnapshot, SCHEMA_VERSION } from './migrate.js'
@@ -31,6 +32,8 @@ import { describeApprovalVerdict, requestWriteApproval } from './approval.js'
 import { UndoStack } from './undo.js'
 import { backupStatus, maybeDailyBackup } from './backup.js'
 import { addCandidate, candidateStats, listCandidates, markCandidateApproved, rejectCandidate } from './candidates.js'
+import { fmtStamp, renderReport } from './report.js'
+import { allowlistSet, normalizeVenue, venueInAllowlist } from './venue.js'
 import { extractPdfInWorker } from './pdfrun.js'
 import {
   addDictEntry,
@@ -328,9 +331,36 @@ class Store {
         }
         // 备份上一份（首次写入时源文件不存在，忽略即可）
         await copyFile(this.file, `${this.file}.bak`).catch(() => {})
-        await rename(temporary, this.file)
+        await renameWithRetry(temporary, this.file)
       })
     return this.writeQueue
+  }
+}
+
+/**
+ * 原子替换，但对 Windows 的瞬时锁做重试。
+ *
+ * 现象：rename(tmp → store.json) 偶发 EPERM/EBUSY（杀软、索引器或上一读者还持有句柄）。
+ * 这不是数据问题，重试几十毫秒就好；重试仍失败才退化为「覆盖写」，最后才抛错。
+ */
+async function renameWithRetry(from, to, attempts = 6) {
+  for (let index = 1; index <= attempts; index += 1) {
+    try {
+      await rename(from, to)
+      return
+    } catch (error) {
+      const transient = error?.code === 'EPERM' || error?.code === 'EBUSY' || error?.code === 'EACCES'
+      if (!transient || index === attempts) {
+        if (!transient) throw error
+        // 兜底：直接覆盖（非原子，但比丢一次写强）
+        await copyFile(from, to).catch(() => {
+          throw error
+        })
+        await rm(from, { force: true }).catch(() => {})
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 15 * index))
+    }
   }
 }
 
@@ -376,6 +406,43 @@ function normalizeFields(value) {
     if (fields.length >= 8) break
   }
   return fields
+}
+
+/** 渠道枚举（§9.2 papers.source；null = 早于来源追踪）。 */
+const PAPER_SOURCE_VALUES = ['manual', 'doi', 'arxiv', 'pdf', 'zotero', 'search', 'skill']
+/** 阅读状态枚举（§9.2 papers.status）。 */
+const PAPER_STATUS_VALUES = ['toread', 'reading', 'done']
+
+/** 渠道归一：非法值直接拒，不静默吞掉（调用方打错字要能发现）。 */
+function normalizeChannel(value) {
+  const raw = String(value ?? '').trim().toLowerCase()
+  if (raw === '') return null
+  if (!PAPER_SOURCE_VALUES.includes(raw)) {
+    throw new RadarError('VALIDATION', `source 只能是 ${PAPER_SOURCE_VALUES.join(' / ')}，收到「${value}」。`, {
+      field: 'source',
+    })
+  }
+  return raw
+}
+
+/** 状态归一：同上。 */
+function normalizeStatusValue(value) {
+  const raw = String(value ?? '').trim().toLowerCase()
+  if (raw === '') return null
+  if (!PAPER_STATUS_VALUES.includes(raw)) {
+    throw new RadarError('VALIDATION', `status 只能是 ${PAPER_STATUS_VALUES.join(' / ')}，收到「${value}」。`, {
+      field: 'status',
+    })
+  }
+  return raw
+}
+
+/**
+ * FR-14.4 / D-2：定时采集（search / skill）进库即待读；**其余入口默认视为已读**。
+ * 显式 status 仍优先；重登记沿用旧状态（见 ingestPaper）。
+ */
+function defaultStatusForSource(channel) {
+  return channel === 'search' || channel === 'skill' ? 'toread' : 'done'
 }
 
 async function ingestPaper(store, input) {
@@ -460,6 +527,15 @@ async function ingestPaper(store, input) {
   if (!existed) paperId = newPaperId()
 
   const previous = existed ? store.papers.get(paperId) : undefined
+  // 通道与状态：显式传入优先；channel 缺省时沿用旧值（重登记不丢来源）
+  const channel = normalizeChannel(input?.channel)
+  const explicitStatus = normalizeStatusValue(input?.status)
+
+  // 缺省领域的唯一落点：正文 / PDF / 批量 / 导入最终都汇到 ingestPaper。
+  // 只在「新旧都拿不到领域」时才落到「未分类」，并且必须显式告警——
+  // 否则调用方（尤其是一次性批量登记）永远发现不了 fields 丢了。
+  const inheritedFields = fields.length > 0 ? fields : previous?.fields ?? []
+  const fieldsAreDefault = inheritedFields.length === 0
 
   // §8 R11：留存 R1 之后、R3/R4 之前的规范化正文（gzip），供重算与完整导出。
   // 只有正文达标（≥120 cp，上面已校验）才留存；不留存时 hasText=false，重算会跳过它。
@@ -479,7 +555,7 @@ async function ingestPaper(store, input) {
     venue: venue !== '' ? venue.slice(0, 120) : previous?.venue ?? '',
     doi: doi !== '' ? doi : previous?.doi ?? '',
     arxivId: arxivId !== '' ? arxivId : previous?.arxivId ?? '',
-    fields: fields.length > 0 ? fields : previous?.fields ?? ['未分类'],
+    fields: fieldsAreDefault ? ['未分类'] : inheritedFields,
     depth,
     chars,
     hitCount: hits.length,
@@ -487,7 +563,11 @@ async function ingestPaper(store, input) {
     rawChars: storedText.rawChars,
     textHash: storedText.textHash,
     isSample: input?.isSample === true ? true : previous?.isSample ?? false,
-    status: previous?.status ?? null,
+    // FR-14.1：渠道只记「从哪条路进来」，遗留数据为 null（不推断回填）
+    source: channel ?? previous?.source ?? null,
+    // FR-14.4：定时采集默认 toread；显式 status 优先；其余沿用旧值
+    // 优先级：显式 > 旧值（重登记不丢状态） > 入口默认（D-2）
+    status: explicitStatus ?? previous?.status ?? defaultStatusForSource(channel),
     readAt: previous?.readAt ?? now,
     updatedAt: now,
   })
@@ -532,6 +612,8 @@ async function ingestPaper(store, input) {
       arxivId: saved.arxivId ?? '',
       hasText: saved.hasText === true,
       hitCount: saved.hitCount ?? 0,
+      source: saved.source ?? null,
+      status: saved.status ?? null,
     },
     created: !existed,
     hits: hits.map((hit) => ({ id: hit.id, name: hit.name, type: hit.type, count: hit.count })),
@@ -539,10 +621,21 @@ async function ingestPaper(store, input) {
     chars,
     depth: saved.depth,
     dictVersion: dictVersionOf(store),
-    warnings: extracted.warnings,
+    warnings: fieldsAreDefault ? [...extracted.warnings, 'fields:未指定'] : extracted.warnings,
     refCut: extracted.refCut,
     refHintEarly: extracted.refHintEarly,
   }
+}
+
+/**
+ * 领域标签归一（与 radar_matrix 同源，RI-7 / E35 的「同源一致」就靠这一个函数）：
+ * 去空白、去「未分类」；全空则按登记时的同名标签记 `未分类`。
+ * BUG-1 修复时把它抽出来，避免 ranking 与 matrix 各写一套过滤导致交叉校验对不上。
+ */
+function fieldsOfPaper(paper) {
+  const labels = Array.isArray(paper?.fields) ? paper.fields.map((item) => String(item).trim()).filter(Boolean) : []
+  const meaningful = [...new Set(labels.filter((label) => label !== '未分类'))]
+  return meaningful.length > 0 ? meaningful : ['未分类']
 }
 
 function buildState(store, options = {}) {
@@ -553,7 +646,10 @@ function buildState(store, options = {}) {
   let staleMentions = 0
   // §7 FR-11.2：示例数据默认不计入排行 / 统计 / 趋势 / 覆盖率
   const includeSamples = options.includeSamples === true
-  const countsTowardStats = (paper) => includeSamples || paper?.isSample !== true
+  // FR-13 / R13.14：报告按 scope 过滤时，所有聚合都跟着缩——分母随 scope 变
+  const paperFilter = typeof options.paperFilter === 'function' ? options.paperFilter : null
+  const countsTowardStats = (paper) =>
+    (includeSamples || paper?.isSample !== true) && (paperFilter === null || (paper !== undefined && paperFilter(paper)))
   let sampleCount = 0
   for (const paper of store.papers.values()) {
     if (paper.isSample === true) sampleCount += 1
@@ -595,7 +691,8 @@ function buildState(store, options = {}) {
 
   const algorithms = []
   for (const [id, stat] of stats.entries()) {
-    const record = store.algorithms.get(id)
+    // 词典未 seed 进快照时（导入的旧库 / 测试库）回退到内置词典，避免把 id 当名字、把类型显示成 OTHER
+    const record = store.algorithms.get(id) ?? LEXICON_BY_ID.get(id)
     algorithms.push({
       id,
       name: record?.name ?? id,
@@ -645,11 +742,15 @@ function buildState(store, options = {}) {
       venue: paper.venue,
       fields: paper.fields,
       depth: paper.depth === 'abstract' ? 'abstract' : 'fulltext',
+      // FR-14.1 / 14.4：渠道与阅读状态；遗留数据为 null（显示「未知」）
+      source: paper.source ?? null,
+      status: paper.status ?? null,
       hitCount: paper.hitCount ?? 0,
       hasText: paper.hasText === true,
       types: [...(perPaperTypes.get(paper.id) ?? [])].sort(compareCodePoints),
       stale: perPaperStale.get(paper.id) === true,
       readAt: paper.readAt,
+      updatedAt: paper.updatedAt ?? paper.readAt,
       top: (perPaper.get(paper.id) ?? []).slice(0, 4),
     }))
     .sort((a, b) => (b.readAt ?? 0) - (a.readAt ?? 0))
@@ -659,6 +760,42 @@ function buildState(store, options = {}) {
     .map(([field, count]) => ({ field, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 12)
+
+  // §1.4：类型分布按「算法 × 论文」去重聚合，一篇可计入多个类型，故合计 > 论文数
+  const typeCounts = new Map()
+  for (const types of perPaperTypes.values()) {
+    for (const type of types) typeCounts.set(type, (typeCounts.get(type) ?? 0) + 1)
+  }
+  const typePaperCounts = [...typeCounts.entries()]
+    .map(([type, papers]) => ({ type, label: TYPE_LABELS[type] ?? '其他', papers }))
+    .sort((a, b) => compareCodePoints(a.type, b.type))
+
+  // §1.6：「未分类」单列一行且排最后；不进领域列表
+  const fieldCountsFull = [...fieldCounts.entries()]
+    .filter(([field]) => field !== '未分类')
+    .map(([field, count]) => ({ field, count }))
+    .sort((a, b) => b.count - a.count || compareCodePoints(a.field, b.field))
+  let unclassified = 0
+  let noText = 0
+  for (const paper of store.papers.values()) {
+    if (!countsTowardStats(paper)) continue
+    const labels = paper.fields ?? []
+    if (labels.length === 0 || labels.every((x) => x === '未分类')) unclassified += 1
+    if (paper.hasText !== true) noText += 1
+  }
+
+  // FR-14.3 / 14.4：来源与状态分布（只统计纳入统计的论文，示例默认不计入）
+  const sourceCounts = { manual: 0, doi: 0, arxiv: 0, pdf: 0, zotero: 0, search: 0, skill: 0, null: 0 }
+  const statusCounts = { toread: 0, reading: 0, done: 0, null: 0 }
+  for (const paper of store.papers.values()) {
+    if (!countsTowardStats(paper)) continue
+    const channel = paper.source ?? null
+    if (channel === null) sourceCounts.null += 1
+    else if (channel in sourceCounts) sourceCounts[channel] += 1
+    const readState = paper.status ?? null
+    if (readState === null) statusCounts.null += 1
+    else if (readState in statusCounts) statusCounts[readState] += 1
+  }
 
   const mentionCount = algorithms.reduce((sum, item) => sum + item.mentions, 0)
   const rawMentionCount = algorithms.reduce((sum, item) => sum + item.rawMentions, 0)
@@ -691,6 +828,12 @@ function buildState(store, options = {}) {
     algorithms,
     papers,
     fields,
+    fieldCountsFull,
+    typePaperCounts,
+    sourceCounts,
+    statusCounts,
+    unclassified,
+    noText,
   }
 }
 
@@ -759,6 +902,17 @@ const ADD_PARAMETERS = {
     },
     venue: { type: 'string', description: '发表会议或期刊，如 "NeurIPS 2024"。' },
     fields: { type: 'string', description: '领域标签，逗号分隔，如 "NLP, Optimization"，最多 8 个。' },
+    source: {
+      type: 'string',
+      enum: ['manual', 'doi', 'arxiv', 'pdf', 'zotero', 'search', 'skill'],
+      description:
+        '来源渠道（只记「从哪条路进来」，不代表质量）。不传时按入口推断：input=DOI→doi、input=arXiv→arxiv、text→manual、pdfPath→pdf；zotero / skill 必须显式传。',
+    },
+    status: {
+      type: 'string',
+      enum: ['toread', 'reading', 'done'],
+      description: '阅读状态。不传时：来源是 search / skill 记为 toread（定时采集默认待读），其它为 null。',
+    },
     doi: {
       type: 'string',
       description: 'DOI。若传入的是 arXiv id 或 arXiv 链接，会自动识别成 arXiv 键。',
@@ -860,6 +1014,7 @@ function buildAddTool(getStore) {
       // ⓪ PDF：读本地文件 → 子进程抽文本 → 丢弃原件
       const pdfPath = String(args?.pdfPath ?? '').trim()
       if (pdfPath !== '') {
+        // 显式 source 优先，否则按入口推断（FR-14.2）
         return ingestPdf(store, pdfPath, args ?? {})
       }
 
@@ -870,6 +1025,9 @@ function buildAddTool(getStore) {
         const registered = await registerCandidate(store, resolved, {
           fields: args?.fields ?? resolved.fields,
           preferFullText: true,
+          // 入口推断：input 是 DOI → doi，是 arXiv → arxiv；显式 source 优先
+          channel: normalizeChannel(args?.source) ?? resolved.channel ?? null,
+          status: args?.status,
         })
         return boundResult(registered)
       }
@@ -884,7 +1042,11 @@ function buildAddTool(getStore) {
           { field: input === '' ? 'input' : 'text' },
         )
       }
-      return ingestPaper(store, args)
+      return ingestPaper(store, {
+        ...args,
+        // 入口推断：粘贴正文 → manual（zotero / skill 必须显式传，不猜）
+        channel: normalizeChannel(args?.source) ?? 'manual',
+      })
     },
   }
 }
@@ -964,6 +1126,8 @@ async function ingestPdf(store, pdfPath, args) {
 
   const fallbackTitle = pdfPath.split(/[\\/]/).pop().replace(/\.pdf$/i, '')
   const result = await ingestPaper(store, {
+    channel: normalizeChannel(args?.source) ?? 'pdf',
+    status: args?.status,
     title: String(args?.title ?? '').trim() || guessTitleFromText(text, fallbackTitle),
     text,
     year: args?.year,
@@ -1011,6 +1175,8 @@ async function resolveInput(input, args) {
       fields: args?.fields,
       // 让 registerCandidate 去抓 arXiv HTML 全文
       source: 'arxiv',
+      // 通道（落库用）：入口是 arXiv
+      channel: 'arxiv',
     }
   }
 
@@ -1029,6 +1195,8 @@ async function resolveInput(input, args) {
       citations: meta.citations,
       fields: args?.fields,
       source: meta.source,
+      // 通道（落库用）：入口是 DOI
+      channel: 'doi',
     }
   }
 
@@ -1049,6 +1217,7 @@ const RANKING_PARAMETERS = {
     },
     type: { type: 'string', description: '只看某一类：DL / ML / MATH，留空表示全部。' },
     q: { type: 'string', description: '按算法名或分类过滤（包含匹配，大小写不敏感）。' },
+    field: { type: 'string', description: '只看某个领域（按论文领域标签过滤，分母同时变成该领域篇数）。' },
     limit: { type: 'number', description: '返回条数，默认 20，最大 50。' },
     offset: { type: 'number', description: '从第几条开始，默认 0。' },
   },
@@ -1060,6 +1229,11 @@ const PAPERS_PARAMETERS = {
   properties: {
     q: { type: 'string', description: '按标题 / 会议过滤（包含匹配，大小写不敏感）。' },
     field: { type: 'string', description: '只看某个领域标签。' },
+    source: {
+      type: 'string',
+      enum: ['manual', 'doi', 'arxiv', 'pdf', 'zotero', 'search', 'skill', 'null'],
+      description: '只看某个来源渠道；传 null 只看「未知（早于来源追踪）」的存量论文。',
+    },
     yearFrom: { type: 'number', description: '起始年份（含）。' },
     yearTo: { type: 'number', description: '结束年份（含）。' },
     depth: { type: 'string', enum: ['fulltext', 'abstract'], description: '只看全文级或仅摘要级。' },
@@ -1095,7 +1269,7 @@ function buildRankingTool(getStore) {
     name: 'radar_ranking',
     description:
       '查询「论文算法雷达」的算法排行。默认按「提及该算法的论文数」排序（抗长文膨胀），也可切到提及数。' +
-      '返回排名、规范名、类型、分类、论文数、提及数、覆盖率、首见 / 最近年份。支持 type / q 过滤与 limit / offset 分页。',
+      '返回排名、规范名、类型、分类、论文数、提及数、覆盖率、首见 / 最近年份。支持 type / q / field 过滤与 limit / offset 分页；给 field 时所有统计（含覆盖率分母与年份区间）都只在领域内计算。',
     parameters: RANKING_PARAMETERS,
     output: {
       schema: RANKING_OUTPUT,
@@ -1115,8 +1289,11 @@ function buildRankingTool(getStore) {
       const rankBy = args?.rankBy === 'mentions' ? 'mentions' : 'papers'
       const type = String(args?.type ?? '').toUpperCase().trim()
       const needle = String(args?.q ?? '').trim().toLowerCase()
+      const field = String(args?.field ?? '').trim()
+      const inField = field === '' ? null : (paper) => fieldsOfPaper(paper).includes(field)
 
-      const state = buildState(store, { paperLimit: 0 })
+      // BUG-1：领域过滤必须在聚合前生效，firstYear / lastYear / papers / mentions 一起在领域内重算
+      const state = buildState(store, { paperLimit: 0, paperFilter: inField })
       let rows = state.algorithms
       if (type !== '' && type !== 'ALL') rows = rows.filter((item) => item.type === type)
       if (needle !== '') {
@@ -1128,7 +1305,7 @@ function buildRankingTool(getStore) {
       // 分母跟随筛选：只被筛掉的论文不算进来
       const denominator = needle === '' && (type === '' || type === 'ALL')
         ? state.paperCount
-        : countPapersMatching(store, rows)
+        : countPapersMatching(store, rows, inField === null ? {} : { paperFilter: inField })
 
       const sorted = [...rows].sort((x, y) => {
         if (rankBy === 'mentions') {
@@ -1141,6 +1318,8 @@ function buildRankingTool(getStore) {
         return compareCodePoints(x.name, y.name)
       })
 
+      // paperCount / mentionCount 语义是「全库规模」，带 field 时另算一份基线，避免把领域篇数当成库规模
+      const library = field === '' ? state : buildState(store, { paperLimit: 0 })
       const page = paginate(sorted, { limit: args?.limit, offset: args?.offset })
       return boundResult({
         items: page.items.map((item, index) => ({
@@ -1160,8 +1339,8 @@ function buildRankingTool(getStore) {
         limit: page.limit,
         truncated: page.truncated,
         denominator,
-        paperCount: state.paperCount,
-        mentionCount: state.mentionCount,
+        paperCount: library.paperCount,
+        mentionCount: library.mentionCount,
         dictVersion: dictVersionOf(store),
       })
     },
@@ -1169,11 +1348,18 @@ function buildRankingTool(getStore) {
 }
 
 /** 当前筛选命中的论文数（分母）：召回的算法所覆盖的论文集合大小。 */
-function countPapersMatching(store, algorithms) {
+function countPapersMatching(store, algorithms, options = {}) {
   const ids = new Set(algorithms.map((item) => item.id))
+  // BUG-1：带 field 时，分母也只数该领域的论文，否则「领域覆盖率」会被别的领域抬高
+  const paperFilter = typeof options.paperFilter === 'function' ? options.paperFilter : null
   const papers = new Set()
   for (const mention of store.mentions.values()) {
-    if (ids.has(mention.algorithmId)) papers.add(mention.paperId)
+    if (!ids.has(mention.algorithmId)) continue
+    if (paperFilter !== null) {
+      const paper = store.papers.get(mention.paperId)
+      if (paper === undefined || paperFilter(paper) !== true) continue
+    }
+    papers.add(mention.paperId)
   }
   return papers.size
 }
@@ -1220,6 +1406,8 @@ function buildPapersTool(getStore) {
       const yearFrom = Number.isFinite(Number(args?.yearFrom)) ? Number(args.yearFrom) : null
       const yearTo = Number.isFinite(Number(args?.yearTo)) ? Number(args.yearTo) : null
       const depth = args?.depth === 'abstract' || args?.depth === 'fulltext' ? args.depth : null
+      // FR-14.3：来源过滤；'null' 是字符串，表示只看存量未知来源
+      const sourceFilter = args?.source === undefined || args?.source === null ? '' : String(args.source).trim().toLowerCase()
       const hasText = typeof args?.hasText === 'boolean' ? args.hasText : null
 
       const rows = state.papers
@@ -1228,10 +1416,15 @@ function buildPapersTool(getStore) {
             const hay = `${paper.title} ${paper.venue ?? ''}`.toLowerCase()
             if (!hay.includes(needle)) return false
           }
-          if (field !== '' && !(paper.fields ?? []).includes(field)) return false
+          // 与 radar_matrix / radar_ranking 同一套标签归一（BUG-1 顺带统一，避免空标签与空白导致三处结果不一致）
+          if (field !== '' && !fieldsOfPaper(store.papers.get(paper.id) ?? paper).includes(field)) return false
           if (yearFrom !== null && (paper.year === null || paper.year < yearFrom)) return false
           if (yearTo !== null && (paper.year === null || paper.year > yearTo)) return false
           if (depth !== null && paper.depth !== depth) return false
+          if (sourceFilter !== '') {
+            const channel = paper.source ?? null
+            if (sourceFilter === 'null' ? channel !== null : channel !== sourceFilter) return false
+          }
           if (hasText !== null && paper.hasText !== hasText) return false
           return true
         })
@@ -1247,6 +1440,8 @@ function buildPapersTool(getStore) {
           fields: paper.fields,
           depth: paper.depth,
           hitCount: paper.hitCount,
+          source: paper.source ?? null,
+          status: paper.status ?? null,
           hasText: paper.hasText === true,
           topAlgorithms: (paper.top ?? []).slice(0, 3),
         })),
@@ -1340,6 +1535,8 @@ async function statusSnapshot(store) {
     algorithmCount: state.algorithmCount,
     mentionCount: state.mentionCount,
     abstractOnlyCount: state.abstractOnlyCount,
+    sourceCounts: state.sourceCounts,
+    statusCounts: state.statusCounts,
     staleMentions,
     stalePapers: state.stalePapers,
     staleRecomputable: state.staleRecomputable,
@@ -1373,6 +1570,12 @@ const DISCOVER_PARAMETERS = {
     minCitations: {
       type: 'number',
       description: '最低引用数（含）；arXiv 不提供引用数，启用后 arXiv-only 候选会被剔除。',
+    },
+    venueAllowlist: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'venue 白名单（归一后精确匹配）。不传时用插件配置的 venueAllowlist；两者都为空则不启用过滤。未命中的候选进 excluded[]，不静默丢弃。',
     },
   },
   required: ['query'],
@@ -2067,9 +2270,7 @@ function buildMatrix(store, args = {}) {
   const papers = []
   for (const paper of store.papers.values()) {
     if (!includeSamples && paper.isSample === true) continue
-    const labels = Array.isArray(paper.fields) ? paper.fields.map((item) => String(item).trim()).filter(Boolean) : []
-    const meaningful = [...new Set(labels.filter((label) => label !== '未分类'))]
-    const fields = meaningful.length > 0 ? meaningful : ['未分类']
+    const fields = fieldsOfPaper(paper)
     if (field !== '' && !fields.includes(field)) continue
     papers.push({ id: paper.id, fields })
   }
@@ -2849,6 +3050,485 @@ async function exportToFile(store, args = {}) {
   }
 }
 
+/* ------------------------------------------------------------------------- *
+ * 研究报告（§7 FR-13 / §8 R13 / docs/REPORT_TEMPLATE_SPEC.md）
+ *
+ * 三条硬约束：
+ *  1. **只读**：不碰 store.json / texts/，只在 exports/reports/ 下落一个 .md；
+ *  2. **内容不进上下文**：工具与接口只返回 { path, bytes, sections }，正文一律不返回；
+ *  3. **可复现**：`generatedAt` 参数化，渲染层是纯函数，同库同参数两次生成字节一致。
+ * ------------------------------------------------------------------------- */
+
+/** 报告用的缺口阈值（D1 §3 / FEATURE_REPORT §5）。 */
+const REPORT_GAP_PARAMS = {
+  abstractRatio: 0.5,
+  libraryMinForTypes: 20,
+  typeShareMin: 0.1,
+  libraryMinForYears: 5,
+  yearLag: 2,
+}
+
+/** 时间参数解析：数字毫秒 / ISO 字符串 / null。 */
+function parseMoment(value) {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * 归一化报告参数（FR-13.1 + P-11 的 path）。
+ * 时间一律参数化，缺省才取当前时刻——这是 E26 的前提。
+ */
+function normalizeReportParams(args = {}) {
+  const generatedAt = parseMoment(args?.generatedAt) ?? Date.now()
+  const mode = ['review', 'decide', 'insight'].includes(args?.mode) ? args.mode : 'review'
+  const windowDays = clampInt(args?.windowDays ?? 30, 1, 3650)
+  const narrative = Number(args?.narrative) === 1 ? 1 : 0
+
+  const rawScope = String(args?.scope ?? 'all').trim()
+  let kind = 'all'
+  let field = String(args?.field ?? '').trim()
+  if (rawScope === 'field' || rawScope.startsWith('field:')) {
+    kind = 'field'
+    if (rawScope.startsWith('field:')) field = rawScope.slice('field:'.length).trim()
+  } else if (rawScope === 'yearRange' || rawScope === 'year' || rawScope.startsWith('year:')) {
+    kind = 'yearRange'
+  }
+
+  const yearFromRaw = args?.yearFrom ?? (rawScope.startsWith('year:') ? rawScope.slice(5).split('-')[0] : undefined)
+  const yearToRaw = args?.yearTo ?? (rawScope.startsWith('year:') ? rawScope.slice(5).split('-')[1] : undefined)
+  const yearFrom = Number.isFinite(Number(yearFromRaw)) && String(yearFromRaw).trim() !== '' ? Number(yearFromRaw) : null
+  const yearTo = Number.isFinite(Number(yearToRaw)) && String(yearToRaw).trim() !== '' ? Number(yearToRaw) : null
+
+  // FR-16.3 / D-5：insight 的 venueScope 与白名单
+  const venueScope = args?.venueScope === 'allowlist' ? 'allowlist' : 'all'
+  const venueAllowlist = Array.isArray(args?.venueAllowlist) ? args.venueAllowlist : VENUE_ALLOWLIST
+  if (mode === 'insight') {
+    // D-5：时间窗本批不做，传了就明确拒绝，不静默忽略
+    if (args?.yearFrom !== undefined || args?.yearTo !== undefined || args?.windowDays !== undefined) {
+      throw new RadarError(
+        'VALIDATION',
+        'insight 暂不支持时间窗（yearFrom / yearTo / windowDays），本批只按领域口径；时间窗见 Q17。',
+        { field: 'windowDays' },
+      )
+    }
+    // D-5：白名单为空时 venueScope=allowlist → VALIDATION，不降级为 all、不出空报告
+    if (venueScope === 'allowlist' && allowlistSet(venueAllowlist).size === 0) {
+      throw new RadarError(
+        'VALIDATION',
+        'venueScope=allowlist 需要非空白名单：请先在插件配置里设置 venueAllowlist，或传 venueAllowlist 参数。',
+        { field: 'venueAllowlist' },
+      )
+    }
+  }
+
+  // RI-1：insight 必须给 field，scope 固定为领域
+  if (mode === 'insight') {
+    if (field === '') {
+      throw new RadarError('VALIDATION', 'mode=insight 必须指定领域（field）；insight 的口径固定为领域，不支持 all / yearRange。', {
+        field: 'field',
+      })
+    }
+    kind = 'field'
+  }
+  if (kind === 'field' && field === '') {
+    throw new RadarError('VALIDATION', 'scope=field 时必须给 field（领域名）', { field: 'field' })
+  }
+  if (kind === 'yearRange' && yearFrom === null && yearTo === null) {
+    throw new RadarError('VALIDATION', 'scope=yearRange 时至少给 yearFrom 或 yearTo', { field: 'yearFrom' })
+  }
+  if (kind === 'yearRange' && yearFrom !== null && yearTo !== null && yearFrom > yearTo) {
+    throw new RadarError('VALIDATION', `yearFrom(${yearFrom}) 不能大于 yearTo(${yearTo})`, { field: 'yearFrom' })
+  }
+
+  const referenceYearRaw = Number(args?.referenceYear)
+  const referenceYear = Number.isFinite(referenceYearRaw) && referenceYearRaw >= 1900 && referenceYearRaw <= 2100
+    ? Math.trunc(referenceYearRaw)
+    : new Date(generatedAt).getFullYear()
+
+  let paperFilter = null
+  let scopeLabel = '全库'
+  let scopeSlug = 'all'
+  if (kind === 'field') {
+    paperFilter = (paper) => Array.isArray(paper.fields) && paper.fields.includes(field)
+    scopeLabel = `领域=${field}`
+    scopeSlug = `field-${field.replace(/\s+/g, '-').replace(/[\\/:*?"<>|]/g, '')}`
+  } else if (kind === 'yearRange') {
+    paperFilter = (paper) =>
+      typeof paper.year === 'number' &&
+      (yearFrom === null || paper.year >= yearFrom) &&
+      (yearTo === null || paper.year <= yearTo)
+    scopeLabel = `年份=${yearFrom ?? '…'}–${yearTo ?? '…'}`
+    scopeSlug = `year-${yearFrom ?? 'min'}-${yearTo ?? 'max'}`
+  }
+
+  return {
+    mode,
+    venueScope,
+    venueAllowlist,
+    kind,
+    field: kind === 'field' ? field : null,
+    yearFrom,
+    yearTo,
+    scopeLabel,
+    scopeSlug,
+    paperFilter,
+    windowDays,
+    narrative,
+    generatedAt,
+    referenceYear,
+    gapParams: args?.gapParams && typeof args.gapParams === 'object' ? { ...REPORT_GAP_PARAMS, ...args.gapParams } : REPORT_GAP_PARAMS,
+    path: args?.path,
+  }
+}
+
+/**
+ * 采集报告数据（一次生成内只读一遍库，§0.1）。
+ * 聚合全部复用 buildState，保证与面板 / 其它工具同一口径（R13.6 排序、R13.14 分母）。
+ */
+function collectReportData(store, params) {
+  const state = buildState(store, {
+    paperFilter: params.paperFilter,
+    paperLimit: Number.MAX_SAFE_INTEGER,
+  })
+
+  // 时间线（§1.5 表 A）：只看 scope 内带年份的论文
+  const yearMap = new Map()
+  let undated = 0
+  for (const paper of state.papers) {
+    if (typeof paper.year === 'number') yearMap.set(paper.year, (yearMap.get(paper.year) ?? 0) + 1)
+    else undated += 1
+  }
+  const sortedYears = [...yearMap.entries()].sort((a, b) => a[0] - b[0])
+  let cumulative = 0
+  const years = sortedYears.map(([year, newPapers]) => {
+    cumulative += newPapers
+    return { year, newPapers, cumulative }
+  })
+
+  // 旧口径条数（按算法）+ 片段定位符（只给编号与长度，正文不进报告）
+  const currentDict = dictVersionOf(store)
+  const inScope = (paper) =>
+    paper !== undefined && paper.isSample !== true && (params.paperFilter === null || params.paperFilter(paper))
+  const staleByAlgorithm = new Map()
+  const snippetPointers = []
+  for (const mention of store.mentions.values()) {
+    if (!inScope(store.papers.get(mention.paperId))) continue
+    if (mention.dictVersion !== currentDict) {
+      staleByAlgorithm.set(mention.algorithmId, (staleByAlgorithm.get(mention.algorithmId) ?? 0) + 1)
+    }
+  }
+  for (const algorithm of state.algorithms.slice(0, 3)) {
+    const lengths = []
+    for (const mention of store.mentions.values()) {
+      if (mention.algorithmId !== algorithm.id) continue
+      if (!inScope(store.papers.get(mention.paperId))) continue
+      for (const snippet of (mention.snippets ?? []).slice(0, 3)) {
+        if (typeof snippet === 'string' && snippet.trim() !== '') lengths.push(codePointLength(snippet))
+      }
+    }
+    if (lengths.length === 0) continue
+    const parts = lengths.slice(0, 3).map((len, i) => `片段 #${i + 1}（${len} 字符）`)
+    snippetPointers.push(`${algorithm.name} ${parts.join('、')}`)
+  }
+  const staleMentionsInTop = state.algorithms
+    .slice(0, 10)
+    .reduce((sum, algorithm) => sum + (staleByAlgorithm.get(algorithm.id) ?? 0), 0)
+
+  // 类型分布：固定 DL / ML / MATH 三行，为 0 也显示（§1.4）
+  const typeMap = new Map(state.typePaperCounts.map((row) => [row.type, row.papers]))
+  const fixedTypes = ['DL', 'ML', 'MATH']
+  const typeDist = fixedTypes.map((type) => ({
+    type,
+    label: TYPE_LABELS[type] ?? '其他',
+    papers: typeMap.get(type) ?? 0,
+  }))
+  for (const row of state.typePaperCounts) {
+    if (!fixedTypes.includes(row.type)) typeDist.push(row)
+  }
+
+  const fulltext = state.paperCount - state.abstractOnlyCount
+
+  // ---- insight（领域洞察）额外数据 ----
+  let library = { papers: state.paperCount }
+  let libraryTop = null
+  let pairs = []
+  let evidence = []
+  let venueLayers = null
+  const minPairs = 3
+  if (params.mode === 'insight') {
+    const libraryState = buildState(store, { paperLimit: 0 })
+    library = { papers: libraryState.paperCount }
+    const top = libraryState.algorithms[0]
+    libraryTop = top === undefined ? null : { id: top.id, name: top.name, papers: top.papers }
+
+    // FR-16.3 / D-5：按 venue 白名单分层（白名单内 / 外），分母各自算
+    if (params.venueScope === 'allowlist') {
+      const allow = params.venueAllowlist
+      const fieldFilter = params.paperFilter
+      const inFilter = (paper) => fieldFilter(paper) && venueInAllowlist(paper.venue, allow)
+      const outFilter = (paper) => fieldFilter(paper) && !venueInAllowlist(paper.venue, allow)
+      const inState = buildState(store, { paperFilter: inFilter, paperLimit: Number.MAX_SAFE_INTEGER })
+      const outState = buildState(store, { paperFilter: outFilter, paperLimit: Number.MAX_SAFE_INTEGER })
+      let missingVenue = 0
+      for (const paper of store.papers.values()) {
+        if (paper.isSample === true) continue
+        if (!fieldFilter(paper) || venueInAllowlist(paper.venue, allow)) continue
+        if (normalizeVenue(paper.venue) === null) missingVenue += 1
+      }
+      venueLayers = {
+        allowlist: allow,
+        in: { papers: inState.paperCount, algorithms: inState.algorithms },
+        out: { papers: outState.paperCount, algorithms: outState.algorithms, missingVenue },
+      }
+    }
+
+    // 复用 radar_cooccurrence 的实现，保证 RI-7「同源一致」
+    const cooc = buildCooccurrence(store, { field: params.field, minPapers: minPairs, limit: 100 })
+    pairs = cooc.pairs.map((pair) => ({
+      ...pair,
+      // 同现率 = 同现篇数 ÷ min(两算法各自篇数)；分母为 0 时留 0，由渲染层显示 —
+      rateDenominator: Math.min(pair.papersA, pair.papersB),
+    }))
+
+    // 证据：Top3 组合各取 3 篇同现论文（hitCount desc），每篇每算法 1 条已存片段
+    const mentionIndex = new Map()
+    const algorithmsOfPaper = new Map()
+    for (const mention of store.mentions.values()) {
+      mentionIndex.set(`${mention.paperId}|${mention.algorithmId}`, mention)
+      if (!algorithmsOfPaper.has(mention.paperId)) algorithmsOfPaper.set(mention.paperId, new Set())
+      algorithmsOfPaper.get(mention.paperId).add(mention.algorithmId)
+    }
+    const firstSnippet = (paperId, algorithmId) => {
+      const mention = mentionIndex.get(`${paperId}|${algorithmId}`)
+      if (mention === undefined || !Array.isArray(mention.snippets)) return null
+      for (const snippet of mention.snippets) {
+        if (typeof snippet === 'string' && snippet.trim() !== '') {
+          // RI-5：每条片段 ≤200 code point（已存的本来就 ≤200，这里兜底）
+          const codePoints = [...snippet]
+          return codePoints.length > 200 ? codePoints.slice(0, 200).join('') : snippet
+        }
+      }
+      return null
+    }
+    evidence = pairs.slice(0, minPairs).map((pair) => {
+      const coPapers = state.papers
+        .filter((paper) => {
+          const set = algorithmsOfPaper.get(paper.id)
+          return set !== undefined && set.has(pair.a.id) && set.has(pair.b.id)
+        })
+        .sort((x, y) => y.hitCount - x.hitCount || (y.updatedAt ?? 0) - (x.updatedAt ?? 0) || compareCodePoints(x.title, y.title))
+        .slice(0, 3)
+      return {
+        aName: pair.a.name,
+        bName: pair.b.name,
+        papers: pair.papers,
+        lift: pair.lift,
+        rateDenominator: pair.rateDenominator,
+        items: coPapers.map((paper) => ({
+          title: paper.title,
+          year: paper.year,
+          snippets: {
+            a: firstSnippet(paper.id, pair.a.id),
+            b: firstSnippet(paper.id, pair.b.id),
+          },
+        })),
+      }
+    })
+  }
+
+  return {
+    field: params.mode === 'insight' ? params.field : null,
+    library,
+    libraryTop,
+    pairs,
+    evidence,
+    minPairs,
+    venueLayers,
+    mode: params.mode,
+    narrative: params.narrative,
+    generatedAt: params.generatedAt,
+    referenceYear: params.referenceYear,
+    windowDays: params.windowDays,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    dictVersion: state.dictVersion,
+    gapParams: params.gapParams,
+    scope: { kind: params.kind, label: params.scopeLabel, slug: params.scopeSlug },
+    sourceCounts: state.sourceCounts,
+    statusCounts: state.statusCounts,
+    venueScope: params.mode === 'insight' ? params.venueScope : 'all',
+    counts: {
+      papers: state.paperCount,
+      fulltext,
+      abstract: state.abstractOnlyCount,
+      algorithms: state.algorithmCount,
+      fields: state.fieldCountsFull.length,
+      mentions: state.mentionCount,
+      staleMentions: state.staleMentions,
+      stalePapers: state.stalePapers,
+      staleRecomputable: state.staleRecomputable,
+      hasTextCount: state.hasTextCount,
+      noText: state.noText,
+    },
+    algorithms: state.algorithms,
+    papers: state.papers,
+    fields: state.fieldCountsFull,
+    unclassified: state.unclassified,
+    typeDist,
+    timeline: {
+      years,
+      undated,
+      firstYear: years.length > 0 ? years[0].year : null,
+      lastYear: years.length > 0 ? years[years.length - 1].year : null,
+    },
+    algorithmYears: state.algorithms.slice(0, 10).map((a) => ({
+      name: a.name,
+      first: a.firstYear,
+      last: a.lastYear,
+    })),
+    staleMentionsInTop,
+    snippetPointers,
+  }
+}
+
+/** 报告目录：默认 `<数据目录>/exports/reports/`；`path` 只能指工作区内目录（P-11）。 */
+async function resolveReportDir(store, pathParam) {
+  const fallback = join(dirname(store.file), 'exports', 'reports')
+  const raw = pathParam === undefined || pathParam === null ? '' : String(pathParam).trim()
+  if (raw === '') {
+    await mkdir(fallback, { recursive: true })
+    return fallback
+  }
+  const root = resolve(process.cwd())
+  const target = isAbsolute(raw) ? resolve(raw) : resolve(root, raw)
+  const rel = relative(root, target)
+  const inside = rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  if (!inside) {
+    throw new RadarError('VALIDATION', `path 只能指向工作区内的目录：${target}`, { field: 'path' })
+  }
+  try {
+    await mkdir(target, { recursive: true })
+  } catch (error) {
+    throw new RadarError('VALIDATION', `报告目录创建失败：${target}（${error?.message ?? error}）`, { field: 'path' })
+  }
+  return target
+}
+
+/** 同名不覆盖：追加 -2、-3…（P-11）。 */
+function pickFreeFileName(dir, base, extension) {
+  const first = join(dir, `${base}${extension}`)
+  if (!existsSync(first)) return first
+  for (let i = 2; i <= 100; i += 1) {
+    const candidate = join(dir, `${base}-${i}${extension}`)
+    if (!existsSync(candidate)) return candidate
+  }
+  throw new RadarError('VALIDATION', `同名报告过多（>100）：${base}${extension}`, { field: 'path' })
+}
+
+/**
+ * 生成报告并落盘。工具、HTTP、命令三个入口共用这一个实现（FR-13.12）。
+ * @returns {Promise<{path: string, bytes: number, sections: object[], mode: string, scope: string, generatedAt: string, narrative: number}>}
+ */
+export async function generateReport(store, args = {}) {
+  const params = normalizeReportParams(args)
+  const data = collectReportData(store, params)
+  const rendered = renderReport(data)
+  const dir = await resolveReportDir(store, params.path)
+  const base = `radar-report-${params.mode}-${params.scopeSlug}-${fmtStamp(params.generatedAt)}`
+  const file = pickFreeFileName(dir, base, '.md')
+  await writeFile(file, rendered.content, 'utf8')
+  return {
+    path: file,
+    bytes: Buffer.byteLength(rendered.content, 'utf8'),
+    sections: rendered.sections,
+    mode: params.mode,
+    scope: params.scopeLabel,
+    generatedAt: new Date(params.generatedAt).toISOString(),
+    narrative: params.narrative,
+  }
+}
+
+const REPORT_PARAMETERS = {
+  type: 'object',
+  properties: {
+    mode: {
+      type: 'string',
+      enum: ['review', 'decide', 'insight'],
+      description: 'review = 汇报报告（10 章）；decide = 决策报告（5 章）；insight = 领域洞察（5 节，必须给 field）。默认 review。',
+    },
+    scope: {
+      type: 'string',
+      description: 'all 全库（默认）/ field 按领域（需配 field）/ yearRange 按年份区间（需配 yearFrom / yearTo）。',
+    },
+    field: { type: 'string', description: 'scope=field 时的领域名。' },
+    yearFrom: { type: 'number', description: 'scope=yearRange 的起始年（含）。' },
+    yearTo: { type: 'number', description: 'scope=yearRange 的结束年（含）。' },
+    windowDays: { type: 'number', description: '「最近 N 天新增」的窗口，默认 30。' },
+    generatedAt: { type: 'string', description: '固定生成时间（ISO-8601）。给了它，同参数两次生成内容逐字节一致（可复现）。' },
+    referenceYear: { type: 'number', description: '参考年，默认取 generatedAt 的年份；用于时间断层判定。' },
+    narrative: { type: 'number', enum: [0, 1], description: '1 = 每章末尾插入待补写占位块（插件不调模型，P-10）。默认 0。' },
+    path: { type: 'string', description: '报告目录（只能是工作区内目录）。默认 <数据目录>/exports/reports/。' },
+  },
+  additionalProperties: false,
+}
+
+/**
+ * `radar_report` —— 只读工具，生成 Markdown 报告落盘（§7 FR-13）。
+ * 归读组：不受 writeEnabled 约束（E30）。
+ */
+function buildReportTool(getStore) {
+  return {
+    name: 'radar_report',
+    description:
+      '把当前库统计渲染成一份 Markdown 报告并落盘（exports/reports/），**只返回路径、字节数与章节标题，不返回内容**。' +
+      'mode=review 出汇报报告（10 章：摘要 / 数据画像 / 排行 / 类型 / 时间线 / 领域 / 代表论文 / 最近新增 / 可信度 / 附录）；' +
+      'mode=decide 出决策报告（5 章：缺口清单 / 证据 / 方向与动作 / 口径 / 未评估项）；' +
+      'mode=insight 出领域洞察（5 节：领域画像 / 算法热度 / 算法组合 / 组合证据 / 口径局限，**必须给 field**）。' +
+      '报告只读库、不改库；正文与证据片段不进入报告正文（片段只给定位符）。' +
+      '想复现同一份报告就固定 generatedAt；narrative=1 只插占位块，不调模型。',
+    parameters: REPORT_PARAMETERS,
+    timeoutMs: 60000,
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          path: { type: 'string' },
+          bytes: { type: 'number' },
+          mode: { type: 'string' },
+          scope: { type: 'string' },
+          generatedAt: { type: 'string' },
+          narrative: { type: 'number' },
+          sections: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: true,
+              properties: { n: { type: 'number' }, title: { type: 'string' } },
+            },
+          },
+        },
+      },
+      render: (_args, value) => {
+        if (!value) return [{ type: 'text', text: '报告生成失败。' }]
+        const titles = value.sections.map((s) => `${s.n}. ${s.title}`).join(' / ')
+        return [
+          {
+            type: 'text',
+            text: `已生成${mode === 'decide' ? '决策' : mode === 'insight' ? '洞察' : '汇报'}报告（${value.scope}，${Math.round((value.bytes / 1024) * 10) / 10} KB）\n路径：${value.path}\n章节：${titles}`,
+          },
+        ]
+      },
+    },
+    isConcurrencySafe: () => false,
+    async execute(args) {
+      const store = await getStore()
+      return generateReport(store, args ?? {})
+    },
+  }
+}
+
 function buildDiscoverTool(getStore, ctx) {
   return {
     name: 'radar_discover',
@@ -2903,6 +3583,8 @@ function buildDiscoverTool(getStore, ctx) {
     async execute(args) {
       const store = await getStore()
       const limit = clampInt(args?.limit ?? 8, 1, 20)
+      // D-3 优先级：入参 > Config > 空（不启用）
+      const allowlist = Array.isArray(args?.venueAllowlist) ? args.venueAllowlist : VENUE_ALLOWLIST
       const found = await searchPapers(ctx, {
         query: args?.query,
         limit,
@@ -2910,6 +3592,7 @@ function buildDiscoverTool(getStore, ctx) {
         yearFrom: args?.yearFrom,
         yearTo: args?.yearTo,
         minCitations: args?.minCitations,
+        venueAllowlist: allowlist,
       })
       const items = found.items.slice(0, limit).map((item) => {
         const doi = normalizeDoi(item.doi)
@@ -2937,6 +3620,10 @@ function buildDiscoverTool(getStore, ctx) {
         via: found.via ?? 'none',
         sources: found.sources ?? [],
         filters: found.filters ?? null,
+        // D-4：未命中的候选显式列出（≤20），并给总数与是否截断
+        excluded: found.excluded ?? [],
+        excludedCount: found.excludedCount ?? 0,
+        excludedTruncated: found.excludedTruncated === true,
       })
     },
   }
@@ -2956,6 +3643,16 @@ const ADD_BATCH_PARAMETERS = {
       description: '批量登记本地 PDF（每个 ≤20MB）。与 items 二选一；单条失败不影响其余。',
     },
     fields: { type: 'string', description: '领域标签，逗号分隔。留空时用候选自带的领域。' },
+    source: {
+      type: 'string',
+      enum: ['manual', 'doi', 'arxiv', 'pdf', 'zotero', 'search', 'skill'],
+      description: '来源渠道。不传时按入口推断为 search；定时采集建议显式传 skill 或 search（两者都会默认记为待读）。',
+    },
+    status: {
+      type: 'string',
+      enum: ['toread', 'reading', 'done'],
+      description: '阅读状态。不传时：来源是 search / skill 记为 toread（定时采集默认待读）。',
+    },
     preferFullText: {
       type: 'boolean',
       description: '是否尝试抓 arXiv 全文（默认 true）；false 则只用摘要。',
@@ -3010,7 +3707,11 @@ function buildAddBatchTool(getStore) {
         const pdfResults = []
         for (let index = 0; index < pdfPaths.length; index += 1) {
           try {
-            const result = await ingestPdf(store, pdfPaths[index], { fields: args?.fields })
+            const result = await ingestPdf(store, pdfPaths[index], {
+              fields: args?.fields,
+              source: args?.source,
+              status: args?.status,
+            })
             pdfResults.push({
               index,
               ok: true,
@@ -3039,6 +3740,9 @@ function buildAddBatchTool(getStore) {
       const list = rawList.slice(0, 10)
       const fields = args?.fields
       const preferFullText = args?.preferFullText !== false
+      // FR-14.2：批量入口默认 search；显式 source 优先（zotero / skill 只能显式传）
+      const channel = normalizeChannel(args?.source) ?? 'search'
+      const status = normalizeStatusValue(args?.status)
       const results = []
       for (let index = 0; index < list.length; index += 1) {
         let candidate
@@ -3053,7 +3757,7 @@ function buildAddBatchTool(getStore) {
           continue
         }
         try {
-          const registered = await registerCandidate(store, candidate, { fields, preferFullText })
+          const registered = await registerCandidate(store, candidate, { fields, preferFullText, channel, status })
           results.push({
             index,
             ok: true,
@@ -3326,13 +4030,44 @@ async function searchPapers(ctx, input) {
     via = okNames.length > 0 ? okNames.join('+') : 'none'
   }
 
+  // D-4：venue 过滤在「各源结果合并去重后 → 截断到 limit 之前」；命中不足 limit 不补请求
+  const venueSet = allowlistSet(input?.venueAllowlist)
+  let keptItems = items
+  let excluded = []
+  let excludedCount = 0
+  let excludedTruncated = false
+  if (venueSet.size > 0) {
+    keptItems = []
+    const dropped = []
+    for (const item of items) {
+      const venueNorm = normalizeVenue(item?.venue)
+      const matched = venueNorm !== null && venueSet.has(venueNorm)
+      if (matched) {
+        keptItems.push(item)
+      } else {
+        dropped.push({
+          title: String(item?.title ?? ''),
+          venue: String(item?.venue ?? ''),
+          venueNorm,
+          reason: venueNorm === null ? 'venue-missing' : 'not-in-allowlist',
+        })
+      }
+    }
+    excludedCount = dropped.length
+    excluded = dropped.slice(0, 20)
+    excludedTruncated = dropped.length > excluded.length
+  }
+
   return {
     query,
     limit,
     via,
     sources: sourceReports,
     filters,
-    items: items.slice(0, limit).map((item) => {
+    excluded,
+    excludedCount,
+    excludedTruncated,
+    items: keptItems.slice(0, limit).map((item) => {
       const arxiv = arxivIdOf(item) !== ''
       return Object.assign({}, item, { arxiv, hasText: arxiv || String(item.abstract ?? '').length >= 120 })
     }),
@@ -3371,6 +4106,8 @@ async function registerCandidate(store, candidate, options) {
     fields: options?.fields,
     depth,
     source: options?.source ?? candidate?.source,
+    channel: options?.channel ?? candidate?.channel ?? null,
+    status: options?.status,
   })
 }
 
@@ -3646,10 +4383,15 @@ function createHandler(getStore, ctx, deps = {}) {
       if (path === `${ROUTE_BASE}/scan` && req.method === 'POST') {
         const body = await readJsonBody(req)
         // 面板/脚本可以直接给 pdfPath；与 radar_add 的 PDF 分支共用同一实现
+        // 来源推断与 radar_add 一致：pdfPath → pdf，粘贴正文 → manual；显式 source 仍优先
+        const explicitSource = normalizeChannel(body?.source)
         const result =
           String(body?.pdfPath ?? '').trim() !== ''
-            ? await ingestPdf(store, String(body.pdfPath).trim(), body)
-            : await ingestPaper(store, body)
+            ? await ingestPdf(store, String(body.pdfPath).trim(), {
+                ...body,
+                source: explicitSource ?? 'pdf',
+              })
+            : await ingestPaper(store, { ...body, channel: explicitSource ?? 'manual' })
         sendJson(res, 200, { ok: true, result, state: buildState(store) })
         return
       }
@@ -3665,6 +4407,8 @@ function createHandler(getStore, ctx, deps = {}) {
         const result = await registerCandidate(store, candidate, {
           fields: body?.fields,
           preferFullText: body?.preferFullText !== false,
+          channel: normalizeChannel(body?.source) ?? 'search',
+          status: body?.status,
         })
         sendJson(res, 200, { ok: true, result, state: buildState(store) })
         return
@@ -3871,6 +4615,14 @@ function createHandler(getStore, ctx, deps = {}) {
         sendJson(res, 200, dumpAll(store))
         return
       }
+      // §7 FR-13.12：面板「生成报告」走这条，与工具共用 generateReport。
+      // 归读组：不进 WRITE_ROUTE_PATHS，writeEnabled=false 时同样可用（E30）。
+      if (path === `${ROUTE_BASE}/report` && req.method === 'POST') {
+        const body = await readJsonBody(req)
+        // 只回路径 / 字节 / 章节，**不回内容**（R13.2）
+        sendJson(res, 200, await generateReport(store, body ?? {}))
+        return
+      }
       sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: '未知接口' } })
     } catch (error) {
       // §10.3：错误一律 { ok:false, error:{ code, message, field? } }，不回显堆栈与正文
@@ -3916,6 +4668,9 @@ let TEXT_READ_ENABLED = false
  * 注意它和 FR-8.8 的常驻策略段不是一回事：策略段常驻、管跨工具决策（见 prompt.js）；
  * 这里只是一次性的新手提示，放在可控面板上比往会话里塞一条难验证的注入更稳。
  */
+/** venue 白名单（D-3：只从 Config 读，不写快照、不加工具/路由）。空数组 = 不启用过滤。 */
+let VENUE_ALLOWLIST = []
+
 let GUIDE_ENABLED = true
 
 /** 会被 writeEnabled 拦下的 HTTP 写接口。 */
@@ -3947,6 +4702,10 @@ export async function apply(ctx, config = {}) {
   CAP_PER_PAPER = clampInt(config?.capPerPaper ?? 0, 0, 1000)
   TEXT_READ_ENABLED = config?.textReadEnabled === true
   GUIDE_ENABLED = config?.welcomeGuide !== false
+  // D-3：白名单只来自 Config（cordis.patch.yml / 宿主设置页）
+  VENUE_ALLOWLIST = Array.isArray(config?.venueAllowlist)
+    ? config.venueAllowlist.map((item) => String(item ?? '')).filter((item) => item.trim() !== '')
+    : []
 
   // FR-8.8：注册 model-facing 系统提示段。text 是 provider，每次组装时重读配置，
   // 所以 writeEnabled 切换后提示词跟着变，不需要重新注册。
@@ -3985,6 +4744,8 @@ export async function apply(ctx, config = {}) {
   ctx.effect(() => ctx.tools.register(buildFieldsTool(getStore)))
   ctx.effect(() => ctx.tools.register(buildCooccurrenceTool(getStore)))
   ctx.effect(() => ctx.tools.register(buildMatrixTool(getStore)))
+  // FR-13.2：报告归读组——writeEnabled=false 时仍注册（E30）
+  ctx.effect(() => ctx.tools.register(buildReportTool(getStore)))
 
   // 撤销窗口（§7 FR-2.10）：过期时才真正删正文文件，窗口内撤销回来还能重算
   const undoStack = new UndoStack({
@@ -4041,6 +4802,7 @@ export async function apply(ctx, config = {}) {
     status: async () => statusSnapshot(await getStore()),
     reextract: async (options) => reextractPapers(await getStore(), options),
     exportFile: async (options) => exportToFile(await getStore(), options),
+    report: async (options) => generateReport(await getStore(), options),
     onRegistered: () => {
       commandState.registered = true
       commandState.reason = ''
@@ -4055,7 +4817,7 @@ export async function apply(ctx, config = {}) {
   // exact 路由（与 dsh-market 的注册方式一致）：prefix 路由在本版本上未命中。
   ctx.inject(['webServer'], (webCtx) => {
     const handler = createHandler(getStore, ctx, { undoStack })
-    for (const endpoint of ['state', 'algorithm', 'trends', 'fields', 'cooccurrence', 'matrix', 'dictionary', 'candidates', 'guide', 'locale', 'samples', 'scan', 'search', 'register-one', 'remove', 'clear', 'restore', 'reextract', 'import', 'export']) {
+    for (const endpoint of ['state', 'algorithm', 'trends', 'fields', 'cooccurrence', 'matrix', 'dictionary', 'candidates', 'guide', 'locale', 'samples', 'scan', 'search', 'register-one', 'remove', 'clear', 'restore', 'reextract', 'import', 'export', 'report']) {
       webCtx.effect(() => webCtx.webServer.register({
         kind: 'exact',
         path: `${ROUTE_BASE}/${endpoint}`,
@@ -4081,6 +4843,7 @@ export const __test = {
   buildDiscoverTool,
   buildAddBatchTool,
   buildExportTool,
+  buildReportTool,
   buildReextractTool,
   buildImportTool,
   buildRemoveTool,
@@ -4101,6 +4864,10 @@ export const __test = {
   buildDictionaryTool,
   buildDictionaryView,
   buildCandidatesTool,
+  buildReportTool,
+  generateReport,
+  normalizeReportParams,
+  collectReportData,
   buildTextTool,
   readRetainedText,
   dictVersionOf,

@@ -12,3 +12,8 @@
       name: dsh-paper-algo-radar
       config:
         writeEnabled: true
+
+# W2.2 / D-3：venue 白名单只从 Config 读（不写快照、不加工具/路由）。空数组 = 不启用过滤。
+#   venueAllowlist:
+#     - CVPR
+#     - NeurIPS

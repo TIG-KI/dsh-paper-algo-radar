@@ -16,3 +16,7 @@ tmp/
 .vscode/
 .idea/
 *.swp
+
+# 隔离实例家目录（本地验证用，含 token 的日志）
+spike/_runtime/
+

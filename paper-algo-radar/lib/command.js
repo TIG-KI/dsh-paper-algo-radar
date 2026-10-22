@@ -12,11 +12,12 @@
  * @module paper-algo-radar/command
  */
 
-export const RADAR_USAGE = '用法：/radar [status | reextract [--apply] | export [--csv]]'
+export const RADAR_USAGE =
+  '用法：/radar [status | reextract [--apply] | export [--csv] | report [review|decide|insight] [--days N] [--field 名] [--years A-B]]'
 
 /**
  * @param {object} ctx Cordis 上下文
- * @param {{ status: () => Promise<object>, reextract: (o: object) => Promise<object>, exportFile: (o: object) => Promise<object> }} api
+ * @param {{ status: () => Promise<object>, reextract: (o: object) => Promise<object>, exportFile: (o: object) => Promise<object>, report: (o: object) => Promise<object> }} api
  */
 export function registerRadarCommand(ctx, api) {
   const injectFn = ctx?.inject
@@ -33,8 +34,8 @@ export function registerRadarCommand(ctx, api) {
       registry.register({
         definitionId: 'dsh-paper-algo-radar/radar',
         name: 'radar',
-        description: '论文算法雷达：查看状态、原地重算旧口径、导出数据',
-        input: { hint: 'status | reextract [--apply] | export [--csv]' },
+        description: '论文算法雷达：查看状态、原地重算旧口径、导出数据、生成 Markdown 报告',
+        input: { hint: 'status | reextract [--apply] | export [--csv] | report [review|decide]' },
         handler: async (invocation) => {
           const raw = String(invocation?.rawInput ?? '').trim()
           const words = raw.split(/\s+/).filter(Boolean)
@@ -77,6 +78,38 @@ export function registerRadarCommand(ctx, api) {
               return {
                 kind: 'success',
                 text: `已导出 ${String(result.format).toUpperCase()}：${Math.round((result.bytes / 1024) * 10) / 10} KB\n路径：${result.path}`,
+              }
+            }
+
+            if (sub === 'report') {
+              const rest = words.slice(1)
+              const mode = rest.includes('decide') || flags.has('--decide')
+                ? 'decide'
+                : rest.includes('insight') || flags.has('--insight')
+                  ? 'insight'
+                  : 'review'
+              const dayIndex = rest.findIndex((w) => w === '--days')
+              const fieldIndex = rest.findIndex((w) => w === '--field')
+              const yearsIndex = rest.findIndex((w) => w === '--years')
+              const options = { mode }
+              if (dayIndex >= 0 && Number.isFinite(Number(rest[dayIndex + 1]))) options.windowDays = Number(rest[dayIndex + 1])
+              if (fieldIndex >= 0 && rest[fieldIndex + 1] !== undefined) {
+                options.scope = 'field'
+                options.field = rest[fieldIndex + 1]
+              }
+              if (yearsIndex >= 0 && typeof rest[yearsIndex + 1] === 'string') {
+                const [from, to] = rest[yearsIndex + 1].split('-')
+                options.scope = 'yearRange'
+                if (Number.isFinite(Number(from))) options.yearFrom = Number(from)
+                if (Number.isFinite(Number(to))) options.yearTo = Number(to)
+              }
+              const result = await api.report(options)
+              const titles = result.sections.map((s) => `${s.n}. ${s.title}`).join(' / ')
+              return {
+                kind: 'success',
+                text:
+                  `已生成${result.mode === 'decide' ? '决策' : result.mode === 'insight' ? '洞察' : '汇报'}报告（${result.scope}，${Math.round((result.bytes / 1024) * 10) / 10} KB）\n` +
+                  `路径：${result.path}\n章节：${titles}`,
               }
             }
 
