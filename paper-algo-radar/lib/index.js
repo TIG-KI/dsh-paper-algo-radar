@@ -23,7 +23,7 @@ import { RadarError, toErrorPayload, toHttpError } from './errors.js'
 import { readText, removeText, writeText } from './texts.js'
 import { analyzeText, sanitizeText } from './textquality.js'
 import { planImport } from './importer.js'
-import { discover as discoverSources, fetchArxivFullText, resolveArxiv, resolveDoi } from './sources.js'
+import { discover as discoverSources, fetchArxivFullText, filterCandidates, resolveArxiv, resolveDoi } from './sources.js'
 import { registerRadarCommand } from './command.js'
 import { registerPromptSection } from './prompt.js'
 import { assertNodeEngine, engineStateOf } from './engines.js'
@@ -1363,6 +1363,17 @@ const DISCOVER_PARAMETERS = {
   properties: {
     query: { type: 'string', description: '领域关键词，如「空气质量预测」或 "air quality prediction"。' },
     limit: { type: 'number', description: '候选条数，默认 8，最大 20。' },
+    sources: {
+      type: 'array',
+      items: { type: 'string', enum: ['openalex', 'crossref', 'arxiv'] },
+      description: '可选检索源，例如 ["openalex","arxiv"]；不传表示三个源全用。',
+    },
+    yearFrom: { type: 'number', description: '起始发表年份（含）；无年份的候选会被剔除。' },
+    yearTo: { type: 'number', description: '结束发表年份（含）。' },
+    minCitations: {
+      type: 'number',
+      description: '最低引用数（含）；arXiv 不提供引用数，启用后 arXiv-only 候选会被剔除。',
+    },
   },
   required: ['query'],
   additionalProperties: false,
@@ -2843,6 +2854,7 @@ function buildDiscoverTool(getStore, ctx) {
     name: 'radar_discover',
     description:
       '按领域关键词检索论文，**只返回候选，不登记**。每个候选带标题、年份、会议、引用数、是否有足够摘要、是否已在库内（inLibrary）。' +
+      '可选检索源（sources），并按发表年份（yearFrom / yearTo）与最低引用数（minCitations）过滤；过滤后剩多少就报多少，并说明剔除了几条。' +
       '要登记请把候选交给 radar_add_batch，或用 radar_add 粘贴正文。',
     parameters: DISCOVER_PARAMETERS,
     timeoutMs: 120000,
@@ -2856,23 +2868,49 @@ function buildDiscoverTool(getStore, ctx) {
           total: { type: 'number' },
           via: { type: 'string' },
           sources: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          filters: { type: 'object', additionalProperties: true },
         },
       },
       render: (_args, value) => {
         const rows = Array.isArray(value?.items) ? value.items : []
-        if (rows.length === 0) return [{ type: 'text', text: `「${value?.query ?? ''}」没有检索到候选。` }]
+        const parts = []
+        if (value?.filters) {
+          const filters = value.filters
+          if (filters.yearFrom !== null || filters.yearTo !== null) {
+            parts.push(`年份 ${filters.yearFrom ?? '…'}–${filters.yearTo ?? '…'}`)
+          }
+          if (filters.minCitations !== null) parts.push(`引用 ≥${filters.minCitations}`)
+          const dropped = (filters.dropped?.year ?? 0) + (filters.dropped?.citations ?? 0)
+          if (dropped > 0) parts.push(`剔除 ${dropped} 条`)
+        }
+        const filterLine = parts.length > 0 ? `\n筛选：${parts.join(' · ')}` : ''
+        if (rows.length === 0) {
+          return [{ type: 'text', text: `「${value?.query ?? ''}」没有检索到候选。${filterLine}` }]
+        }
         const lines = rows.map(
           (row, index) =>
             `${index + 1}. ${row.title}${row.year ? ` (${row.year})` : ''}${row.inLibrary ? ' · 已在库' : ''}${row.arxivId ? ' · arXiv' : ''}`
         )
-        return [{ type: 'text', text: `「${value.query}」候选 ${rows.length} 篇${value.via ? `（来源 ${value.via}）` : ''}：\n${lines.join('\n')}` }]
+        return [
+          {
+            type: 'text',
+            text: `「${value.query}」候选 ${rows.length} 篇${value.via ? `（来源 ${value.via}）` : ''}：${filterLine}\n${lines.join('\n')}`,
+          },
+        ]
       },
     },
     isConcurrencySafe: () => false,
     async execute(args) {
       const store = await getStore()
       const limit = clampInt(args?.limit ?? 8, 1, 20)
-      const found = await searchPapers(ctx, { query: args?.query, limit })
+      const found = await searchPapers(ctx, {
+        query: args?.query,
+        limit,
+        sources: args?.sources,
+        yearFrom: args?.yearFrom,
+        yearTo: args?.yearTo,
+        minCitations: args?.minCitations,
+      })
       const items = found.items.slice(0, limit).map((item) => {
         const doi = normalizeDoi(item.doi)
         const arxivId = normalizeArxivId(arxivIdOf(item))
@@ -2885,7 +2923,7 @@ function buildDiscoverTool(getStore, ctx) {
           doi,
           arxivId,
           url: item.url,
-          citations: item.citations ?? 0,
+          citations: Number.isFinite(item.citations) ? item.citations : null,
           hasAbstract: String(item.abstract ?? '').length >= 120,
           inLibrary,
           abstractPreview: String(item.abstract ?? '').slice(0, 200),
@@ -2898,6 +2936,7 @@ function buildDiscoverTool(getStore, ctx) {
         total: items.length,
         via: found.via ?? 'none',
         sources: found.sources ?? [],
+        filters: found.filters ?? null,
       })
     },
   }
@@ -3240,15 +3279,21 @@ async function searchPapers(ctx, input) {
   if (query === '') throw new RadarError('VALIDATION', '请提供领域关键词，例如「空气质量预测」。', { field: 'query' })
 
   const limit = clampInt(input?.limit ?? 8, 1, 20)
-  const wanted = String(input?.sources ?? '')
-    .split(',')
-    .map((name) => name.trim())
+  const rawWanted = Array.isArray(input?.sources) ? input.sources : String(input?.sources ?? '').split(',')
+  const wanted = rawWanted
+    .map((name) => String(name).trim())
     .filter((name) => ['openalex', 'crossref', 'arxiv'].includes(name))
+  const discoverFilters = {
+    yearFrom: input?.yearFrom,
+    yearTo: input?.yearTo,
+    minCitations: input?.minCitations,
+  }
 
   let items = []
   let via = 'none'
   let rawSample
   let sourceReports = []
+  let filters = filterCandidates([], discoverFilters).filters
 
   // 1) 宿主装了论文搜索插件就先问它（能拿到它自己的配额与凭据）
   if (input?.fallback !== 'host-off' && ctx.tools.get(SEARCH_TOOL) !== undefined) {
@@ -3256,9 +3301,12 @@ async function searchPapers(ctx, input) {
       const value = await executePluginTool(ctx, SEARCH_TOOL, { query, max_results: limit }, 120000)
       const parsed = typeof value === 'string' ? parseSearchText(value) : extractSearchItems(value).map(normalizeCandidate)
       if (parsed.length > 0) {
-        items = parsed
+        // 宿主检索不一定支持过滤参数，取回后统一本地过滤
+        const applied = filterCandidates(parsed, discoverFilters)
+        items = applied.items
+        filters = applied
         via = 'paper_search'
-        sourceReports = [{ name: 'paper_search', status: 'ok', count: parsed.length }]
+        sourceReports = [{ name: 'paper_search', status: 'ok', count: items.length }]
       } else {
         rawSample = String(typeof value === 'string' ? value : JSON.stringify(value)).slice(0, 1500)
         sourceReports = [{ name: 'paper_search', status: 'failed', count: 0, error: '返回里没有可解析的条目' }]
@@ -3270,8 +3318,9 @@ async function searchPapers(ctx, input) {
 
   // 2) 自带多源并发（§7 FR-6.2 / P-7），单源失败不影响其它源
   if (items.length === 0 && input?.fallback !== 'off') {
-    const found = await discoverSources(query, { limit, sources: wanted })
+    const found = await discoverSources(query, { limit, sources: wanted, ...discoverFilters })
     items = found.items
+    filters = found.filters ?? filters
     sourceReports = [...sourceReports, ...found.sources]
     const okNames = found.sources.filter((s) => s.status === 'ok' && s.count > 0).map((s) => s.name)
     via = okNames.length > 0 ? okNames.join('+') : 'none'
@@ -3282,6 +3331,7 @@ async function searchPapers(ctx, input) {
     limit,
     via,
     sources: sourceReports,
+    filters,
     items: items.slice(0, limit).map((item) => {
       const arxiv = arxivIdOf(item) !== ''
       return Object.assign({}, item, { arxiv, hasText: arxiv || String(item.abstract ?? '').length >= 120 })

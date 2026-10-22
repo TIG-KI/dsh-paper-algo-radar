@@ -13,7 +13,7 @@
 | W1.0 需求条数 | 13 |
 | 拆成任务 | **8 个** |
 | 已完成 | **8 / 8** ✅ W1.0 全部完成 |
-| 测试 | **1001 单元（31 套件）+ 94 端到端**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37） |
+| 测试 | **1033 单元（32 套件）+ 94 端到端**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37） |
 | W1.1 进度 | **5 / 5 任务完成** ✅ |
 
 ---
@@ -164,15 +164,18 @@
 - **以后判据**：`Get-Item <profile>/node_modules/<pkg> | Select LinkType` 必须是 `Junction` 或 `SymbolicLink`；复制 HOME 之后必须重建联接。
 - 代价：这次白跑了 3 轮浏览器验证才定位。
 
-### W1.1-04 · 响应式 + 图表表格视图 + 检索限速/缓存 ✅ **已完成**
-- **FR**：4.3（窄屏降级）/ 9.4（每张图表必须配表格视图）/ 13.2 / 6.10（限速）
+### W1.1-04 · 响应式 + 图表表格视图 + 检索限速/缓存 + 检索过滤 ✅ **已完成**
+- **FR**：4.3（窄屏降级）/ 9.4（每张图表必须配表格视图）/ 13.2 / 6.10（限速）/ 6.8（检索源可选、年份与引用数过滤）
 - **已做**：
   - **图表表格视图**：趋势页与领域页各有「看表格 / 看网格（看条形）」切换，表格带 caption（`data-radar-chart-table`）
   - **响应式**：`useNarrow()` 以 720px 为界；窄屏下隐藏排行「年份」列、趋势网格列宽 84→56px、表格容器横向滚动
   - **限速**：同主机最小间隔（默认 300ms），三源并发时互不影响
   - **缓存**：5 分钟内存缓存（上限 200 条），同一查询点「刷新」不再出站；`configureThrottle` / `clearSourceCache` / `cacheStats` 可注入，测试用本地假服务器
+  - **检索过滤（FR-6.8）**：`radar_discover` 支持 `sources` / `yearFrom` / `yearTo` / `minCitations`；OpenAlex 与 Crossref 走服务端年份过滤（OpenAlex 另带 `cited_by_count`），arXiv 走 `submittedDate` 区间；合并后统一本地过滤，`filters.dropped` 如实回报剔除数。arXiv 无引用数，`citations` 用 `null` 表示未知，启用 `minCitations` 时会被剔除
 - **已验**：
   - `test/throttle.test.mjs` **12/12**（缓存命中/过期、相邻请求间隔 ≥100ms、跨主机并发、缓存上限）
+  - `test/sources.test.mjs` **53/53**（新增：年份/引用过滤、剔除计数、OpenAlex/Crossref/arXiv 请求参数、arXiv 引用未知）
+  - `test/discover.test.mjs` **18/18**（工具参数、输出 schema、卡片筛选说明、空结果仍保留筛选行）
   - **浏览器实测（1424px）**：趋势表格 5 行、领域表格 4 行，切换按钮成对出现
   - **浏览器实测（624px）**：`narrow=true`、年份列消失、表格与条形都可用（截图 `spike/evidence/w11-narrow.png`）
 - **教训**：这一轮我的补丁脚本有一次**静默失败**（目标字符串没匹配上，脚本没断言就报成功），导致趋势页的切换按钮没生成，浏览器验证才发现。以后补丁脚本必须逐条断言。

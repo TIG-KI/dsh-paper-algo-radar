@@ -73,10 +73,37 @@ function plainText(value) {
   return decodeEntities(String(value ?? '').replace(/<[^>]+>/g, ' '))
 }
 
-async function searchOpenAlex(query, limit) {
+/** OpenAlex 支持服务端年份与引用数过滤。 */
+function openAlexFilter({ yearFrom, yearTo, minCitations }) {
+  const parts = []
+  if (yearFrom !== null) parts.push(`from_publication_date:${yearFrom}-01-01`)
+  if (yearTo !== null) parts.push(`to_publication_date:${yearTo}-12-31`)
+  // OpenAlex 没有 >= 语法，用 > (min - 1) 表达「至少 min 次」
+  if (minCitations !== null) parts.push(`cited_by_count:>${Math.max(0, minCitations - 1)}`)
+  return parts.length > 0 ? `&filter=${parts.join(',')}` : ''
+}
+
+/** Crossref 支持服务端年份过滤；引用数只能取回后本地过滤。 */
+function crossrefFilter({ yearFrom, yearTo }) {
+  const parts = []
+  if (yearFrom !== null) parts.push(`from-pub-date:${yearFrom}-01-01`)
+  if (yearTo !== null) parts.push(`until-pub-date:${yearTo}-12-31`)
+  return parts.length > 0 ? `&filter=${parts.join(',')}` : ''
+}
+
+/** arXiv 用 submittedDate 区间过滤；不提供引用数。 */
+function arxivDateClause({ yearFrom, yearTo }) {
+  if (yearFrom === null && yearTo === null) return ''
+  const from = `${yearFrom ?? 1991}01010000`
+  const to = `${yearTo ?? 2100}12312359`
+  return `+AND+submittedDate:${encodeURIComponent(`[${from} TO ${to}]`)}`
+}
+
+async function searchOpenAlex(query, limit, options = {}) {
   const url =
     `${ENDPOINTS.openalex}?search=${encodeURIComponent(query)}` +
-    `&per-page=${limit}&select=id,doi,title,publication_year,primary_location,cited_by_count,abstract_inverted_index`
+    `&per-page=${limit}&select=id,doi,title,publication_year,primary_location,cited_by_count,abstract_inverted_index` +
+    openAlexFilter(options)
   const data = await limitedFetch('openalex:' + url, 'openalex', () => fetchJson(url, { timeoutMs: 12000 }))
   const results = Array.isArray(data?.results) ? data.results : []
   return results.map((item) => ({
@@ -92,10 +119,11 @@ async function searchOpenAlex(query, limit) {
   }))
 }
 
-async function searchCrossref(query, limit) {
+async function searchCrossref(query, limit, options = {}) {
   const url =
     `${ENDPOINTS.crossref}?query=${encodeURIComponent(query)}&rows=${limit}` +
-    `&select=DOI,title,issued,container-title,is-referenced-by-count,abstract,URL`
+    `&select=DOI,title,issued,container-title,is-referenced-by-count,abstract,URL` +
+    crossrefFilter(options)
   const data = await limitedFetch('crossref:' + url, 'crossref', () => fetchJson(url, { timeoutMs: 12000 }))
   const results = Array.isArray(data?.message?.items) ? data.message.items : []
   return results.map((item) => ({
@@ -131,16 +159,17 @@ export function parseArxivAtom(xml) {
       arxivId,
       url: id,
       abstract: pick('summary'),
-      citations: 0,
+      // arXiv API 不提供引用数；null 表示「未知」，不是 0
+      citations: null,
       source: 'arxiv',
     })
   }
   return entries
 }
 
-async function searchArxiv(query, limit) {
+async function searchArxiv(query, limit, options = {}) {
   const url =
-    `${ENDPOINTS.arxiv}?search_query=all:${encodeURIComponent(query)}` +
+    `${ENDPOINTS.arxiv}?search_query=all:${encodeURIComponent(query)}${arxivDateClause(options)}` +
     `&start=0&max_results=${limit}`
   const xml = await limitedFetch('arxiv:' + url, 'arxiv', () => fetchText(url, { timeoutMs: 12000 }))
   return parseArxivAtom(xml)
@@ -256,19 +285,83 @@ export function mergeItems(groups) {
   return merged
 }
 
+/** 年份必须在合理区间；只接受整数，其余当「没传」。 */
+function filterYear(value) {
+  const year = Number(value)
+  if (!Number.isFinite(year)) return null
+  const whole = Math.trunc(year)
+  return whole >= 1000 && whole <= 3000 ? whole : null
+}
+
+/**
+ * 归一化检索过滤条件（年份区间 + 最低引用数）。
+ * - 年份只接受 1000–3000 的整数；from > to 时自动交换；
+ * - `minCitations` 只在 > 0 时生效；0 / 空表示不过滤；
+ * - 无效值当「没传」，不报错（候选是检索结果，不值得为过滤参数中断）。
+ */
+export function normalizeDiscoverFilters(options = {}) {
+  let yearFrom = filterYear(options.yearFrom)
+  let yearTo = filterYear(options.yearTo)
+  if (yearFrom !== null && yearTo !== null && yearFrom > yearTo) {
+    const swap = yearFrom
+    yearFrom = yearTo
+    yearTo = swap
+  }
+  const rawMin = Number(options.minCitations)
+  const minCitations = Number.isFinite(rawMin) && rawMin > 0 ? Math.trunc(rawMin) : null
+  return { yearFrom, yearTo, minCitations }
+}
+
+/**
+ * 在合并后的候选上应用年份 / 引用数过滤。
+ * 口径：年份或引用数**未知**时，只要启用了对应过滤就剔除（无法证明满足，失败关闭）；
+ * arXiv 的 citations 是 null 而不是 0，所以设了 minCitations 会如实剔除。
+ * @returns {{items: object[], filters: object, dropped: {year: number, citations: number}, total: number}}
+ */
+export function filterCandidates(items, options = {}) {
+  const filters = normalizeDiscoverFilters(options)
+  const dropped = { year: 0, citations: 0 }
+  const kept = []
+  for (const item of items) {
+    if (filters.yearFrom !== null || filters.yearTo !== null) {
+      if (!Number.isFinite(item.year)) {
+        dropped.year += 1
+        continue
+      }
+      if (filters.yearFrom !== null && item.year < filters.yearFrom) {
+        dropped.year += 1
+        continue
+      }
+      if (filters.yearTo !== null && item.year > filters.yearTo) {
+        dropped.year += 1
+        continue
+      }
+    }
+    if (filters.minCitations !== null) {
+      if (!Number.isFinite(item.citations) || item.citations < filters.minCitations) {
+        dropped.citations += 1
+        continue
+      }
+    }
+    kept.push(item)
+  }
+  return { items: kept, filters, dropped, total: items.length }
+}
+
 /**
  * 多源并发检索。
- * @returns {Promise<{items: object[], sources: {name: string, status: 'ok'|'failed', count: number, error?: string}[]}>}
+ * @returns {Promise<{items: object[], sources: object[], filters: object}>}
  */
 export async function discover(query, options = {}) {
   const limit = Number(options.limit) > 0 ? Math.trunc(Number(options.limit)) : 8
+  const filters = normalizeDiscoverFilters(options)
   const wanted = Array.isArray(options.sources) && options.sources.length > 0
     ? options.sources.filter((name) => CLIENTS[name] !== undefined)
     : SOURCE_NAMES.slice()
   const picked = wanted.length > 0 ? wanted : SOURCE_NAMES.slice()
 
   const settled = await Promise.allSettled(
-    picked.map(async (name) => ({ name, items: await CLIENTS[name](query, limit) })),
+    picked.map(async (name) => ({ name, items: await CLIENTS[name](query, limit, filters) })),
   )
 
   const reports = []
@@ -290,11 +383,14 @@ export async function discover(query, options = {}) {
 
   // 排序策略：先按「被几个源同时命中」降序（多源共识 = 更强证据），
   // 再**按源轮转**，避免前 N 条全来自同一个源（三个源结果不重叠时尤其明显）。
+  // 过滤放在 merge 之后：一条 arXiv 记录可能与 OpenAlex 合并后补到引用数。
   const merged = mergeItems(groups)
-  merged.sort((a, b) => (b.sources?.length ?? 0) - (a.sources?.length ?? 0))
+  const applied = filterCandidates(merged, filters)
+  const items = applied.items
+  items.sort((a, b) => (b.sources?.length ?? 0) - (a.sources?.length ?? 0))
 
   const buckets = new Map()
-  for (const item of merged) {
+  for (const item of items) {
     const primary = item.source
     if (!buckets.has(primary)) buckets.set(primary, [])
     buckets.get(primary).push(item)
@@ -315,7 +411,11 @@ export async function discover(query, options = {}) {
     round += 1
   }
 
-  return { items: interleaved.slice(0, limit * 2), sources: reports }
+  return {
+    items: interleaved.slice(0, limit * 2),
+    sources: reports,
+    filters: { ...applied.filters, dropped: applied.dropped, total: applied.total },
+  }
 }
 /** 按 DOI 取元数据（Crossref）。 */
 export async function resolveDoi(doi) {

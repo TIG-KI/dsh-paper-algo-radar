@@ -13,6 +13,8 @@ import { setAllowedHosts, setFetch } from '../lib/net.js'
 import {
   discover,
   mergeItems,
+  normalizeDiscoverFilters,
+  filterCandidates,
   parseArxivAtom,
   resetEndpoints,
   resolveArxiv,
@@ -96,8 +98,10 @@ const CROSSREF_DOI_BODY = {
 }
 
 const hitCount = { openalex: 0, crossref: 0, arxiv: 0 }
+const hitUrls = []
 
 const server = createServer((req, res) => {
+  hitUrls.push(req.url)
   const url = new URL(req.url, 'http://127.0.0.1')
   const send = (status, body, type = 'application/json') => {
     res.writeHead(status, { 'content-type': type })
@@ -225,6 +229,43 @@ try {
     check('补齐了 DOI', merged[0].doi === '10.1/x')
     check('补齐了年份', merged[0].year === 2020)
     check('引用取大值', merged[0].citations === 9)
+  }
+  console.log('\n[8] 检索源可选 + 年份/引用数过滤（FR-6.8）')
+  {
+    const swapped = normalizeDiscoverFilters({ yearFrom: 2024, yearTo: 2020 })
+    check('yearFrom > yearTo 自动交换', swapped.yearFrom === 2020 && swapped.yearTo === 2024, JSON.stringify(swapped))
+    check('无效年份当没传', normalizeDiscoverFilters({ yearFrom: 'abc' }).yearFrom === null)
+    check('minCitations=0 表示不过滤', normalizeDiscoverFilters({ minCitations: 0 }).minCitations === null)
+
+    const yearOnly = await discover('x', { limit: 5, sources: ['crossref'], yearFrom: 2022, yearTo: 2022 })
+    check('年份过滤只留 2022 的 1 条', yearOnly.items.length === 1 && yearOnly.items[0].doi === '10.1000/abc', JSON.stringify(yearOnly.items.map((item) => item.doi)))
+    check('剔除了 2021 的 1 条', yearOnly.filters.dropped.year === 1, JSON.stringify(yearOnly.filters.dropped))
+    check('filters 回显年份区间', yearOnly.filters.yearFrom === 2022 && yearOnly.filters.yearTo === 2022)
+
+    const cited = await discover('x', { limit: 5, sources: ['crossref'], minCitations: 10 })
+    check('引用 ≥10 只留 30 引用的那条', cited.items.length === 1 && cited.items[0].citations === 30, JSON.stringify(cited.items.map((item) => [item.doi, item.citations])))
+    check('剔除了 5 引用的 1 条', cited.filters.dropped.citations === 1, JSON.stringify(cited.filters.dropped))
+
+    const parsed = parseArxivAtom(ARXIV_ATOM)[0]
+    check('arXiv 引用数是 null（未知）而不是 0', parsed.citations === null, String(parsed.citations))
+    const applied = filterCandidates([parsed], { minCitations: 1 })
+    check('未知引用数在启用过滤时被剔除', applied.items.length === 0 && applied.dropped.citations === 1, JSON.stringify(applied.dropped))
+
+    await discover('x', { limit: 5, sources: ['openalex'], yearFrom: 2022, yearTo: 2022, minCitations: 5 })
+    const openalexUrl = [...hitUrls].reverse().find((item) => item.startsWith('/openalex')) ?? ''
+    const decodedOpenAlex = decodeURIComponent(openalexUrl)
+    check('OpenAlex 请求带年份范围', decodedOpenAlex.includes('from_publication_date:2022-01-01') && decodedOpenAlex.includes('to_publication_date:2022-12-31'), decodedOpenAlex)
+    check('OpenAlex 请求带引用数下限', decodedOpenAlex.includes('cited_by_count:>4'), decodedOpenAlex)
+
+    check(
+      'Crossref 请求带年份范围',
+      hitUrls.some((item) => decodeURIComponent(item).includes('from-pub-date:2022-01-01') && decodeURIComponent(item).includes('until-pub-date:2022-12-31')),
+      JSON.stringify(hitUrls.filter((item) => item.startsWith('/crossref'))),
+    )
+
+    await discover('x', { limit: 3, sources: ['arxiv'], yearFrom: 2020 })
+    const arxivUrl = decodeURIComponent([...hitUrls].reverse().find((item) => item.startsWith('/arxiv')) ?? '')
+    check('arXiv 请求带 submittedDate 区间', arxivUrl.includes('submittedDate:[202001010000 TO'), arxivUrl)
   }
 } finally {
   await new Promise((resolve) => server.close(resolve))
