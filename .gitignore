@@ -20,3 +20,6 @@ tmp/
 # 隔离实例家目录（本地验证用，含 token 的日志）
 spike/_runtime/
 
+# 一次性调试产物 / 迁移中间文件（含本机绝对路径，不入库）
+spike/_scratch/
+
