@@ -969,6 +969,24 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * FR-2.10：词典页的类型筛选（纯函数，便于单测）。
+     * 只影响表格，不影响「新增条目」的类型选择。
+     */
+    function filterDictEntries(entries, type) {
+      const list = Array.isArray(entries) ? entries : [];
+      return type === 'ALL' ? list : list.filter((entry) => entry.type === type);
+    }
+
+    /** 各类型条数（筛选按钮上的计数）。 */
+    function countDictTypes(entries) {
+      const counts = { DL: 0, ML: 0, MATH: 0 };
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        if (counts[entry.type] !== undefined) counts[entry.type] += 1;
+      }
+      return counts;
+    }
+
     /** 词典管理（FR-2.7）：列表 + 新增 + 删除；改完会提示旧提及变旧口径。 */
     function DictionaryView({ onChanged }) {
       const [state, setState] = React.useState({ kind: 'loading' });
@@ -976,6 +994,8 @@ window.__ModuleLoader__.load({
       const [name, setName] = React.useState('');
       const [aliases, setAliases] = React.useState('');
       const [type, setType] = React.useState('MATH');
+      // FR-2.10：列表筛选与「新条目类型」是两件事，各用一份状态，互不串味。
+      const [filterType, setFilterType] = React.useState('ALL');
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState('');
       const [candidates, setCandidates] = React.useState([]);
@@ -1045,6 +1065,10 @@ window.__ModuleLoader__.load({
       if (state.kind === 'error') return h('div', { style: S.muted }, '读词典失败：' + state.message);
 
       const value = state.value;
+      // FR-2.10：类型筛选只影响表格，不影响「新增条目」的类型选择。
+      const allEntries = Array.isArray(value.entries) ? value.entries : [];
+      const typeCounts = countDictTypes(allEntries);
+      const shownEntries = filterDictEntries(allEntries, filterType);
       const inputStyle = {
         height: 26,
         padding: '0 8px',
@@ -1092,6 +1116,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', { style: { ...S.muted, fontSize: 12, fontWeight: 600 } }, '新增条目'),
           h('input', {
             value: name,
             placeholder: '算法规范名，如 图注意力网络',
@@ -1104,8 +1129,13 @@ window.__ModuleLoader__.load({
             onChange: (e) => setAliases(e.target.value),
             style: { ...inputStyle, width: 260 },
           }),
+          h('span', { style: { ...S.muted, fontSize: 12 } }, '类型'),
           ...['DL', 'ML', 'MATH'].map((t) =>
-            h('button', { key: t, style: S.chip(type === t), onClick: () => setType(t) }, t)
+            h(
+              'button',
+              { key: t, style: S.chip(type === t), 'data-radar-dict-newtype': t, onClick: () => setType(t) },
+              t
+            )
           ),
           h(
             'button',
@@ -1127,6 +1157,30 @@ window.__ModuleLoader__.load({
           )
         ),
         error !== '' ? h('div', { style: { ...S.muted, color: 'var(--dsw-alias-state-business-primary)' } }, error) : null,
+        h(
+          'div',
+          {
+            style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+            'data-radar-dict-filter': filterType,
+          },
+          h('span', { style: { ...S.muted, fontSize: 12, fontWeight: 600 } }, '按类型筛选'),
+          ...['ALL', 'DL', 'ML', 'MATH'].map((key) =>
+            h(
+              'button',
+              {
+                key,
+                style: S.chip(filterType === key),
+                'data-radar-dict-filter-chip': key,
+                'aria-pressed': filterType === key ? 'true' : 'false',
+                onClick: () => setFilterType(key),
+              },
+              key === 'ALL' ? `全部 ${allEntries.length}` : `${key} ${typeCounts[key]}`
+            )
+          ),
+          filterType === 'ALL'
+            ? null
+            : h('span', { style: S.muted }, `显示 ${shownEntries.length} / ${allEntries.length} 条`)
+        ),
         h(
           'div',
           { style: { overflowX: 'auto' } },
@@ -1151,7 +1205,7 @@ window.__ModuleLoader__.load({
             h(
               'tbody',
               null,
-              ...value.entries.map((entry) =>
+              ...shownEntries.map((entry) =>
                 h(
                   'tr',
                   { key: entry.id, style: entry.status === 'disabled' ? { opacity: 0.45 } : undefined },
@@ -1177,7 +1231,10 @@ window.__ModuleLoader__.load({
                         )
                   )
                 )
-              )
+              ),
+              shownEntries.length === 0
+                ? h('tr', { key: 'empty' }, h('td', { colSpan: 7, style: { ...S.td, ...S.muted } }, '该类型下没有条目'))
+                : null
             )
           )
         )
@@ -1545,7 +1602,12 @@ window.__ModuleLoader__.load({
       };
     }
 
-    module.exports = { apply, inject };
+    // __test 只供本地单测（FR-2.10 的筛选纯函数 + 词典视图组件）；宿主只认 apply / inject。
+    module.exports = {
+      apply,
+      inject,
+      __test: { filterDictEntries, countDictTypes, DictionaryView },
+    };
     return module.exports;
   },
 });
