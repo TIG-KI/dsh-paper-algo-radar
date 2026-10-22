@@ -7,10 +7,10 @@ DSH 插件：把读过的论文转成「算法 × 章节 × 年份 × 领域」�
 |---|---|
 | 版本 | `0.2.0`（包名 `dsh-paper-algo-radar`） |
 | 里程碑 | W0 / W1.0 / W1.1 / W1.2 / W2.0 全部交付；87 条 FR 落地 84，3 条 P2 明示未做 |
-| 单元测试 | **972 条 / 30 套件**，`node --test` 全绿，不碰网络、不需要宿主 |
+| 单元测试 | **1001 条 / 31 套件**，`node --test` 全绿，不碰网络、不需要宿主 |
 | 端到端 | **94 条**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37），需真实宿主 |
 | 验收批 | **10 PASS / 0 FAIL / 9 SKIP**（SKIP = 需网络凭据或人工抽查，不计入通过） |
-| 模型面向工具 | 19 个（读 9 + 写 10；`radar_text` 仅在 `textReadEnabled` 打开时 +1） |
+| 模型面向工具 | 20 个（读 10 + 写 10；`radar_text` 仅在 `textReadEnabled` 打开时 +1） |
 | HTTP 路由 | 13 个 exact 端点；面板 7 个标签页（排行 / 论文 / 趋势 / 领域 / 共现 / 词典 / 设置） |
 
 ## 仓库结构
@@ -23,7 +23,7 @@ paper-algo-radar/        插件本体（可独立安装，宿主侧零运行时�
   locale/ icon.svg       文案与图标
   package.json           dsh manifest：manifestVersion / bundle.patch / client.inject / engines
   cordis.patch.yml       bundle 安装时的插入行（writeEnabled 总开关）
-  README.md              插件细节：模块职责、19 个工具、装法与排障
+  README.md              插件细节：模块职责、20 个工具、装法与排障
 docs/                    PRD、W0/W1 任务清单、交付验收报告
 spike/evidence/          验收截图（docs/ACCEPTANCE.md 引用的证据）
 MANIFEST.txt             v0.2.0 交付包 SHA256 清单（历史留档）
@@ -40,7 +40,7 @@ MANIFEST.txt             v0.2.0 交付包 SHA256 清单（历史留档）
 ```bash
 cd paper-algo-radar
 
-# 单元 + 函数级：30 套件 / 972 断言，不需要宿主、不需要网络
+# 单元 + 函数级：31 套件 / 1001 断言，不需要宿主、不需要网络
 node --test test/*.test.mjs
 
 # 验收批（§12 用例的可本地执行部分）：PASS / FAIL / SKIP 三态
@@ -91,7 +91,7 @@ rsync -a --inplace --exclude '.DS_Store' paper-algo-radar/ \
   ~/.dsh/plugins-local/dsh-paper-algo-radar/
 
 # 2) 完全退出宿主再启动（关窗口不算）：新 HTTP 路由是启动时注册的
-# 3) 验证：/paper-algo-radar/state 的 tools 数量应为 19（textReadEnabled=false 时 18）
+# 3) 验证：/paper-algo-radar/state 的 tools 数量应为 20（textReadEnabled=false 时 19）
 ```
 
 改完重启仍是旧行为，通常是宿主还拿着旧模块：先确认进程启动时间晚于 `lib/index.js` 的修改时间；
@@ -136,7 +136,7 @@ node -e "import('file://' + process.env.HOME + '/.dsh/profiles/desktop/node_modu
 | [docs/REQUIREMENTS_PLUGIN-v1.0.md](docs/REQUIREMENTS_PLUGIN-v1.0.md) | PRD（PAR-PRD-003 v1.0，87 条 FR） |
 | [docs/W0_TASKS.md](docs/W0_TASKS.md) / [docs/W1_TASKS.md](docs/W1_TASKS.md) | 任务拆解与完成状态 |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | 交付验收报告：指标、验证方式、不变量、未做项 |
-| [paper-algo-radar/README.md](paper-algo-radar/README.md) | 插件细节：模块职责、19 个工具、数据通道、装法与排障 |
+| [paper-algo-radar/README.md](paper-algo-radar/README.md) | 插件细节：模块职责、20 个工具、数据通道、装法与排障 |
 
 ## 已知限制
 

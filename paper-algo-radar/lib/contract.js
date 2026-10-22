@@ -20,6 +20,7 @@ export const READ_TOOL_NAMES = [
   'radar_trends',
   'radar_fields',
   'radar_cooccurrence',
+  'radar_matrix',
 ]
 
 /** 写工具：会落盘，受 `writeEnabled` 与审批约束（W1.0 起）。 */

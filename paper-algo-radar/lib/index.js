@@ -2029,6 +2029,140 @@ function buildFields(store, options = {}) {
   }
 }
 
+const MATRIX_PARAMETERS = {
+  type: 'object',
+  properties: {
+    topN: { type: 'number', description: '列数：论文数最多的前 N 个算法，默认 8，最大 20。' },
+    field: { type: 'string', description: '只看某个领域；留空表示全部领域。' },
+  },
+  additionalProperties: false,
+}
+
+/**
+ * 领域 × 头部算法矩阵（§7 FR-5.3）。
+ *
+ * 口径：
+ *  - 列：当前筛选范围内「论文数」最多的前 `topN` 个算法（不是提及数，避免长文支配）；
+ *  - 行：每个领域，`count` 是该领域论文数；
+ *  - 单元格：该领域里**提及过**该算法的不同论文数（同一篇多次提及只算 1）；
+ *  - 一篇论文有多个领域时，在每行各计一次；`未分类` 按登记时的同名标签算；
+ *  - 示例数据默认不计入（`includeSamples` 供面板「先看示例」临时打开）。
+ */
+function buildMatrix(store, args = {}) {
+  const includeSamples = args.includeSamples === true
+  const topN = clampInt(args.topN ?? 8, 1, 20)
+  const field = String(args.field ?? '').trim()
+
+  const papers = []
+  for (const paper of store.papers.values()) {
+    if (!includeSamples && paper.isSample === true) continue
+    const labels = Array.isArray(paper.fields) ? paper.fields.map((item) => String(item).trim()).filter(Boolean) : []
+    const meaningful = [...new Set(labels.filter((label) => label !== '未分类'))]
+    const fields = meaningful.length > 0 ? meaningful : ['未分类']
+    if (field !== '' && !fields.includes(field)) continue
+    papers.push({ id: paper.id, fields })
+  }
+
+  // 论文 → 去重后的算法集合（同一算法在同一篇里出现多次只算 1 篇）
+  const algorithmsOfPaper = new Map()
+  for (const mention of store.mentions.values()) {
+    if (!algorithmsOfPaper.has(mention.paperId)) algorithmsOfPaper.set(mention.paperId, new Set())
+    algorithmsOfPaper.get(mention.paperId).add(mention.algorithmId)
+  }
+
+  // 列排序用「全范围论文数」，一篇多领域不重复计数
+  const algorithmPapers = new Map()
+  for (const paper of papers) {
+    for (const algorithmId of algorithmsOfPaper.get(paper.id) ?? []) {
+      algorithmPapers.set(algorithmId, (algorithmPapers.get(algorithmId) ?? 0) + 1)
+    }
+  }
+
+  const recordOf = (id) => store.algorithms.get(id) ?? LEXICON_BY_ID.get(id)
+  const algorithms = [...algorithmPapers.entries()]
+    .map(([id, count]) => {
+      const record = recordOf(id)
+      return { id, name: record?.name ?? id, type: record?.type ?? 'OTHER', papers: count }
+    })
+    .sort((a, b) => b.papers - a.papers || compareCodePoints(a.name, b.name))
+    .slice(0, topN)
+
+  const byField = new Map()
+  for (const paper of papers) {
+    for (const label of paper.fields) {
+      if (field !== '' && label !== field) continue
+      if (!byField.has(label)) byField.set(label, { count: 0, algorithms: new Map() })
+      const row = byField.get(label)
+      row.count += 1
+      for (const algorithmId of algorithmsOfPaper.get(paper.id) ?? []) {
+        row.algorithms.set(algorithmId, (row.algorithms.get(algorithmId) ?? 0) + 1)
+      }
+    }
+  }
+
+  const rows = [...byField.entries()]
+    .map(([name, row]) => ({
+      field: name,
+      count: row.count,
+      cells: algorithms.map((algorithm) => ({
+        algorithmId: algorithm.id,
+        papers: row.algorithms.get(algorithm.id) ?? 0,
+      })),
+    }))
+    .sort((a, b) => b.count - a.count || compareCodePoints(a.field, b.field))
+
+  return {
+    algorithms,
+    rows,
+    totalPapers: papers.length,
+    field: field === '' ? null : field,
+    topN,
+  }
+}
+
+function buildMatrixTool(getStore) {
+  return {
+    name: 'radar_matrix',
+    description:
+      '看「领域 × 头部算法」矩阵：行是领域、列是论文数最多的前 N 个算法，单元格是该领域里提及该算法的论文数。' +
+      '默认 topN=8、全部领域；只统计论文数（不是提及数），示例数据默认不计入。',
+    parameters: MATRIX_PARAMETERS,
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          algorithms: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          rows: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          totalPapers: { type: 'number' },
+          topN: { type: 'number' },
+        },
+      },
+      render: (_args, value) => {
+        if (!value || value.rows.length === 0 || value.algorithms.length === 0) {
+          return [{ type: 'text', text: '还没有可统计的领域或算法。先登记几篇带 fields 的论文。' }]
+        }
+        const nameOf = new Map(value.algorithms.map((item) => [item.id, item.name]))
+        const lines = [
+          `领域 × 头部算法（前 ${value.algorithms.length} 个算法 · ${value.totalPapers} 篇）`,
+        ]
+        for (const row of value.rows.slice(0, 8)) {
+          const cells = row.cells
+            .filter((cell) => cell.papers > 0)
+            .map((cell) => `${nameOf.get(cell.algorithmId) ?? cell.algorithmId} ${cell.papers}`)
+          lines.push(`${row.field}（${row.count} 篇）：${cells.join(' · ') || '—'}`)
+        }
+        if (value.rows.length > 8) lines.push(`· 其余 ${value.rows.length - 8} 个领域略`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    async execute(args) {
+      const store = await getStore()
+      return boundResult(buildMatrix(store, args ?? {}))
+    },
+  }
+}
+
 const TRENDS_PARAMETERS = {
   type: 'object',
   properties: {
@@ -3659,6 +3793,18 @@ function createHandler(getStore, ctx, deps = {}) {
         sendJson(res, 200, buildFields(store, { includeSamples: url.searchParams.get('samples') === '1' }))
         return
       }
+      if (path === `${ROUTE_BASE}/matrix` && req.method === 'GET') {
+        sendJson(
+          res,
+          200,
+          buildMatrix(store, {
+            topN: url.searchParams.get('topN') ?? undefined,
+            field: url.searchParams.get('field') ?? '',
+            includeSamples: url.searchParams.get('samples') === '1',
+          }),
+        )
+        return
+      }
       if (path === `${ROUTE_BASE}/import` && req.method === 'POST') {
         const body = await readJsonBody(req)
         const result = await importFromPath(store, body ?? {})
@@ -3788,6 +3934,7 @@ export async function apply(ctx, config = {}) {
   ctx.effect(() => ctx.tools.register(buildTrendsTool(getStore)))
   ctx.effect(() => ctx.tools.register(buildFieldsTool(getStore)))
   ctx.effect(() => ctx.tools.register(buildCooccurrenceTool(getStore)))
+  ctx.effect(() => ctx.tools.register(buildMatrixTool(getStore)))
 
   // 撤销窗口（§7 FR-2.10）：过期时才真正删正文文件，窗口内撤销回来还能重算
   const undoStack = new UndoStack({
@@ -3858,7 +4005,7 @@ export async function apply(ctx, config = {}) {
   // exact 路由（与 dsh-market 的注册方式一致）：prefix 路由在本版本上未命中。
   ctx.inject(['webServer'], (webCtx) => {
     const handler = createHandler(getStore, ctx, { undoStack })
-    for (const endpoint of ['state', 'algorithm', 'trends', 'fields', 'cooccurrence', 'dictionary', 'candidates', 'guide', 'locale', 'samples', 'scan', 'search', 'register-one', 'remove', 'clear', 'restore', 'reextract', 'import', 'export']) {
+    for (const endpoint of ['state', 'algorithm', 'trends', 'fields', 'cooccurrence', 'matrix', 'dictionary', 'candidates', 'guide', 'locale', 'samples', 'scan', 'search', 'register-one', 'remove', 'clear', 'restore', 'reextract', 'import', 'export']) {
       webCtx.effect(() => webCtx.webServer.register({
         kind: 'exact',
         path: `${ROUTE_BASE}/${endpoint}`,
@@ -3898,6 +4045,8 @@ export const __test = {
   buildTrends,
   buildFields,
   buildCooccurrence,
+  buildMatrix,
+  buildMatrixTool,
   buildCooccurrenceTool,
   buildDictionaryTool,
   buildDictionaryView,

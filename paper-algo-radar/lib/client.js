@@ -856,7 +856,9 @@ window.__ModuleLoader__.load({
     /** 领域分布（FR-5.4）：横向条，不用环图。 */
     function FieldsView({ includeSamples }) {
       const [state, setState] = React.useState({ kind: 'loading' });
+      const [matrix, setMatrix] = React.useState({ kind: 'loading' });
       const [asTable, setAsTable] = React.useState(false);
+      const narrow = useNarrow();
       React.useEffect(() => {
         let alive = true;
         requestJson(BASE + '/fields' + (includeSamples ? '?samples=1' : ''), { cache: 'no-store' })
@@ -866,12 +868,24 @@ window.__ModuleLoader__.load({
           alive = false;
         };
       }, [includeSamples]);
+      React.useEffect(() => {
+        let alive = true;
+        setMatrix({ kind: 'loading' });
+        requestJson(BASE + '/matrix?topN=' + (narrow ? 5 : 8) + (includeSamples ? '&samples=1' : ''), { cache: 'no-store' })
+          .then((value) => alive && setMatrix({ kind: 'ready', value }))
+          .catch((error) => alive && setMatrix({ kind: 'error', message: error?.message ?? String(error) }));
+        return () => {
+          alive = false;
+        };
+      }, [includeSamples, narrow]);
 
       if (state.kind === 'loading') return h('div', { style: S.muted }, '正在读领域分布…');
       if (state.kind === 'error') return h('div', { style: S.muted }, '读领域失败：' + state.message);
 
       const value = state.value;
-      if (value.fields.length === 0) return h('div', { style: S.muted }, '还没有领域标签。登记时传 fields 就会出现在这里。');
+      // 只有「未分类」论文时也保留矩阵（会显示一行未分类），不要误报「还没有领域标签」
+      if (value.fields.length === 0 && value.unclassified === 0)
+        return h('div', { style: S.muted }, '还没有领域标签。登记时传 fields 就会出现在这里。');
       const max = Math.max(1, ...value.fields.map((f) => f.count));
 
       return h(
@@ -915,7 +929,78 @@ window.__ModuleLoader__.load({
             h('span', { style: { fontFamily: mono, fontSize: 11.5, textAlign: 'right' } }, f.count)
           )
         ),
-        value.unclassified > 0 && !asTable ? h('div', { style: S.muted }, `未分类：${value.unclassified} 篇`) : null
+        value.unclassified > 0 && !asTable ? h('div', { style: S.muted }, `未分类：${value.unclassified} 篇`) : null,
+        matrix.kind === 'ready' && matrix.value.rows.length > 0 && matrix.value.algorithms.length > 0
+          ? h(
+              'div',
+              { style: { ...S.box, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }, 'data-radar-matrix': '1' },
+              h(
+                'div',
+                { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' } },
+                h('span', { style: { fontWeight: 600, fontSize: 12.5 } }, '领域 × 头部算法'),
+                h('span', { style: S.muted }, `前 ${matrix.value.algorithms.length} 个算法 · ${matrix.value.totalPapers} 篇`)
+              ),
+              h(
+                'div',
+                { style: { overflowX: 'auto' } },
+                h(
+                  'table',
+                  { style: S.table },
+                  h(
+                    'thead',
+                    null,
+                    h(
+                      'tr',
+                      null,
+                      h('th', { style: S.th }, '领域'),
+                      ...matrix.value.algorithms.map((item) =>
+                        h(
+                          'th',
+                          { key: item.id, style: { ...S.th, textAlign: 'right', whiteSpace: 'nowrap' }, title: `${item.name}（${item.papers} 篇）` },
+                          item.name
+                        )
+                      )
+                    )
+                  ),
+                  h(
+                    'tbody',
+                    null,
+                    ...matrix.value.rows.map((row) =>
+                      h(
+                        'tr',
+                        { key: row.field },
+                        h(
+                          'td',
+                          { style: S.td },
+                          row.field,
+                          h('span', { style: { ...S.muted, marginLeft: 6, fontFamily: mono, fontSize: 11 } }, row.count)
+                        ),
+                        ...row.cells.map((cell, index) =>
+                          h(
+                            'td',
+                            {
+                              key: index,
+                              style: {
+                                ...S.td,
+                                textAlign: 'right',
+                                fontFamily: mono,
+                                fontVariantNumeric: 'tabular-nums',
+                                opacity: cell.papers > 0 ? 1 : 0.35,
+                              },
+                              title: `${row.field} × ${matrix.value.algorithms[index]?.name ?? cell.algorithmId}：${cell.papers} 篇`,
+                            },
+                            cell.papers > 0 ? cell.papers : '·'
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          : matrix.kind === 'error'
+            ? h('div', { style: S.muted }, '矩阵读取失败：' + matrix.message)
+            : null
       );
     }
 

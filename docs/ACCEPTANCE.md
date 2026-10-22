@@ -11,10 +11,10 @@
 
 | 项 | 数 |
 |---|---|
-| 单元测试 | **972 条 / 30 个套件，全绿** |
+| 单元测试 | **1001 条 / 31 个套件，全绿** |
 | 端到端（走真实宿主） | **94 条**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37） |
 | 验收批（§12 用例） | **10 PASS / 0 FAIL / 9 SKIP** |
-| 模型面向工具 | **19 个**（读 9 + 写 10；`radar_text` 仅开关打开时 +1） |
+| 模型面向工具 | **20 个**（读 10 + 写 10；`radar_text` 仅开关打开时 +1） |
 | HTTP 路由 | 13 个 exact 端点 |
 | 面板标签页 | 7 个（排行 / 论文 / 趋势 / 领域 / 共现 / 词典 / 设置） |
 
@@ -26,7 +26,7 @@ SKIP 的 9 条需要网络凭据、真实模型回合或人工抽查，**不计�
 
 | 层 | 手段 | 证据 |
 |---|---|---|
-| 纯函数 | `node test/*.test.mjs` | 972 条断言 |
+| 纯函数 | `node test/*.test.mjs` | 1001 条断言 |
 | 服务层 | 假 ctx + 假 HTTP 服务器 | 工具注册、审批、限速缓存、子进程 |
 | 宿主集成 | 隔离 `DSH_HOME` + 真实 dsh 进程 | `test/e2e-*.mjs` |
 | 界面 | 无头 Chrome + CDP 探针 | `spike/evidence/*.png` |
@@ -47,8 +47,8 @@ SKIP 的 9 条需要网络凭据、真实模型回合或人工抽查，**不计�
 **证据**：`test/{reextract,import,approval,command,algorithm,sources,prompt}.test.mjs`；`spike/evidence/w1-detail.png`
 
 ### W1.1 · 好看（36 条）
-撤销 / 清空 / 恢复（10 秒窗口）、趋势、领域分布、示例数据包、空状态三入口、响应式（720px）、图表表格视图、检索限速与缓存、PDF 登记（子进程 + 超时强杀）。
-**证据**：`test/{undo,trends,samples,throttle,pdf}.test.mjs`；`spike/evidence/w11-{trends,samples,narrow,undo}.png`
+撤销 / 清空 / 恢复（10 秒窗口）、趋势、领域分布、领域 × 头部算法矩阵、示例数据包、空状态三入口、响应式（720px）、图表表格视图、检索限速与缓存、PDF 登记（子进程 + 超时强杀）。
+**证据**：`test/{undo,trends,matrix,samples,throttle,pdf}.test.mjs`；`spike/evidence/w11-{trends,samples,narrow,undo}.png`
 
 ### W1.2 · 更可信（5 条）
 共现分析（lift）、每篇封顶计数（保留 rawMentions）、双时间轴、词典管理（增删改 / 别名搬移 / 软删除 / 口径版本联动）、批量 PDF。
@@ -81,7 +81,7 @@ SKIP 的 9 条需要网络凭据、真实模型回合或人工抽查，**不计�
 
 ```
 5 篇论文 · 13 个算法 · 124 次提及 · 4 篇仅摘要
-词典 2026.10.1  工具 19 个  备份 1 份（保留 7）
+词典 2026.10.1  工具 20 个  备份 1 份（保留 7）
 候选待处理 0  正文读取关闭（radar_text 不注册）
 ```
 
