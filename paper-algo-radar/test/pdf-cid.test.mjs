@@ -229,7 +229,43 @@ console.log('\n[5] 对象流（/ObjStm）里的页面与字体也能解')
   check('对象流里的字体也生效', result.text.includes('对象流测试'), JSON.stringify(result.text.slice(0, 60)))
 }
 
-console.log('\n[6] 端到端：radar_add({ pdfPath }) 收录中文论文')
+console.log('\n[6] 表单 XObject（页面上只有一个 Do，正文与字体都在表单里）')
+{
+  // 页面 → Xf1（只画 Xf2）→ Xf2（字体 + 正文）：排版软件常这样嵌套
+  const inner = `BT /F1 12 Tf 72 740 Td <${utf16Hex('表单里的正文')}> Tj ET`
+  const pdf = assemble([
+    { num: 1, dict: '<< /Type /Catalog /Pages 2 0 R >>' },
+    { num: 2, dict: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+    {
+      num: 3,
+      dict: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Xf1 5 0 R >> >> /Contents 4 0 R >>',
+    },
+    { num: 4, dict: '<< /Length 0 /Filter /FlateDecode >>', stream: deflateSync(Buffer.from('q 1 0 0 1 0 0 cm /Xf1 Do Q', 'latin1')) },
+    {
+      num: 5,
+      dict:
+        '<< /Length 0 /Filter /FlateDecode /Type /XObject /Subtype /Form /BBox [0 0 595 842] ' +
+        '/Resources << /XObject << /Xf2 8 0 R >> >> /FormType 1 >>',
+      stream: deflateSync(Buffer.from('q 1 0 0 1 0 0 cm /Xf2 Do Q', 'latin1')),
+    },
+    {
+      num: 8,
+      dict:
+        '<< /Length 0 /Filter /FlateDecode /Type /XObject /Subtype /Form /BBox [0 0 595 842] ' +
+        '/Resources << /Font << /F1 6 0 R >> >> /FormType 1 >>',
+      stream: deflateSync(Buffer.from(inner, 'latin1')),
+    },
+    { num: 6, dict: '<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /UniGB-UCS2-H /DescendantFonts [7 0 R] >>' },
+    { num: 7, dict: '<< /Type /Font /Subtype /CIDFontType2 /BaseFont /T /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>' },
+  ])
+  const result = extractPdfText(pdf)
+  check('嵌套表单里的正文被抽出来', result.text.includes('表单里的正文'), JSON.stringify(result.text.slice(0, 60)))
+  check('质量可用', analyzeText(result.text).usable)
+  const withFonts = extractTextWithFonts(pdf)
+  check('表单里的字体计入统计', withFonts.fontCount >= 1, String(withFonts.fontCount))
+}
+
+console.log('\n[7] 端到端：radar_add({ pdfPath }) 收录中文论文')
 const dir = await mkdtemp(join(tmpdir(), 'radar-cid-'))
 try {
   const store = new Store(join(dir, 'store.json'))

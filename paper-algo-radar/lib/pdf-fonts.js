@@ -461,6 +461,41 @@ export function textFromTokens(tokens, fonts, decoderCache = new Map()) {
   return parts.join('\n')
 }
 
+/** 页面或表单的 XObject 子资源（表单里可能还套表单）。 */
+function xobjectTexts(container, objects, stats, decoderCache, depth) {
+  if (depth > 8) return []
+  const out = []
+  const resources = resourcesOf(container, objects)
+  if (!resources) return out
+  const dict = String(resources.dict)
+  let xdict = ''
+  const ref = /\/XObject\s+(\d+)\s+\d+\s+R/.exec(dict)
+  if (ref) xdict = String(objects.get(Number(ref[1]))?.dict ?? '')
+  else {
+    const at = dict.indexOf('/XObject')
+    if (at >= 0) xdict = balancedDict(dict.slice(at)) ?? ''
+  }
+  for (const item of xdict.matchAll(/\/([A-Za-z0-9#+._-]+)\s+(\d+)\s+\d+\s+R/g)) {
+    const object = objects.get(Number(item[2]))
+    if (!object) continue
+    if (/\/Subtype\s*\/Image/.test(String(object.dict))) continue
+    const formFonts = fontsOf(object, objects)
+    formFonts.objects = objects
+    stats.fontCount = (stats.fontCount ?? 0) + formFonts.size
+    for (const fontObject of formFonts.values()) {
+      if (/\/Subtype\s*\/Type0/.test(String(fontObject.dict))) stats.cidFonts = (stats.cidFonts ?? 0) + 1
+    }
+    const content = streamText(object)
+    if (content !== '') {
+      stats.streams += 1
+      const text = textFromTokens(tokenizeContent(content), formFonts, decoderCache)
+      if (text !== '') out.push(text)
+    }
+    out.push(...xobjectTexts(object, objects, stats, decoderCache, depth + 1))
+  }
+  return out
+}
+
 /** 页面对象（按对象号近似文档顺序）。 */
 export function pageObjects(objects) {
   return [...objects.values()]
@@ -527,14 +562,20 @@ export function extractTextWithFonts(buffer) {
       if (/\/Subtype\s*\/Type0/.test(String(fontObject.dict))) cidFontCount += 1
     }
     fonts.objects = objects
-    const refs = contentRefsOf(page)
+    const stats = { streams: 0 }
     const chunks = []
-    for (const ref of refs) {
+    for (const ref of contentRefsOf(page)) {
       const content = streamText(objects.get(ref))
       if (content === '') continue
       decodedStreams += 1
       chunks.push(textFromTokens(tokenizeContent(content), fonts, decoderCache))
     }
+    // 很多排版软件把正文放进表单 XObject（页面上只有一个 Do），正文的字体在表单自己的资源里
+    const formTexts = xobjectTexts(page, objects, stats, decoderCache, 0)
+    fontCount += stats.fontCount ?? 0
+    cidFontCount += stats.cidFonts ?? 0
+    decodedStreams += stats.streams
+    if (formTexts.length > 0) chunks.push(...formTexts)
     const pageText = chunks.join('\n').trim()
     if (pageText === '') continue
     // 混合型 PDF（部分页是自定义编码的简单字体）只保留能读的页，别让噪声页拖垮整份
