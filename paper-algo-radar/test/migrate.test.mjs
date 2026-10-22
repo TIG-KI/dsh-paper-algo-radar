@@ -166,7 +166,15 @@ console.log('\n[4] 真实快照（只读）')
     check('论文数不变', Object.keys(data.papers).length === before.papers, `${Object.keys(data.papers).length} vs ${before.papers}`)
     check('提及数不变（无孤儿时）', Object.keys(data.mentions).length === before.mentions - report.droppedMentions)
     check('所有提及都有 dictVersion', Object.values(data.mentions).every((m) => typeof m.dictVersion === 'string'))
-    check('旧提及标为 v0.2-legacy', Object.values(data.mentions).some((m) => m.dictVersion === LEGACY_DICT_VERSION))
+    // 真实库可能已被 reextract 刷成当前口径，所以不能断言「一定有 legacy 标记」；
+    // 要断言的是迁移契约本身：入参里缺 dictVersion 的提及，迁移后必须补成 v0.2-legacy。
+    const backfillIds = Object.keys(parsed.mentions ?? {})
+      .filter((id) => typeof parsed.mentions[id]?.dictVersion !== 'string' && id in data.mentions)
+    check(
+      '无 dictVersion 的旧提及被回填为 v0.2-legacy',
+      backfillIds.every((id) => data.mentions[id].dictVersion === LEGACY_DICT_VERSION),
+      `${backfillIds.length} 条待回填`,
+    )
     check('sections 只剩 experiment', Object.values(data.mentions).every((m) => !('experiments' in m.sections)))
     check('所有论文都有 hasText', Object.values(data.papers).every((p) => typeof p.hasText === 'boolean'))
     check('所有论文都有 dedupeKey', Object.values(data.papers).every((p) => typeof p.dedupeKey === 'string'))
