@@ -99,6 +99,26 @@ profile 里再跑一次 `pnpm install` 可刷新 `node_modules`（pnpm 对 `file
 安装位与 `node_modules` 里**部分文件共享 inode**，所以原地改写能透传、但编辑器/`git checkout`
 这类"写临时文件再改名"的操作会把硬链接断掉，此时必须重装）。
 
+**新增文件是例外（2026-10-22 实际踩过）**：硬链接只能共享已经存在的 inode，所以 `rsync`
+新增的 `lib/xxx.js` 只出现在 `plugins-local`，不会出现在 profile 的 `node_modules` 副本里。
+宿主加载 `index.js` 时 `import './xxx.js'` 会报 `ERR_MODULE_NOT_FOUND`，**整个插件被判加载失败**
+——侧栏入口、工具、路由一起消失，但数据完好。加新文件后二选一：
+
+```bash
+# A. 补链（最小改动，后续原地改写仍可透传）
+ln ~/.dsh/plugins-local/dsh-paper-algo-radar/lib/xxx.js \
+   ~/.dsh/profiles/desktop/node_modules/dsh-paper-algo-radar/lib/xxx.js
+
+# B. 刷新整个 file: 依赖（会重排 node_modules）
+cd ~/.dsh/profiles/desktop && pnpm install
+```
+
+复现宿主加载错误的命令：
+
+```bash
+node -e "import('file://' + process.env.HOME + '/.dsh/profiles/desktop/node_modules/dsh-paper-algo-radar/lib/index.js').then(m=>console.log('OK',m.inject)).catch(e=>console.log(e.code,e.message))"
+```
+
 > Windows 上还有一段历史的踩坑记录（junction 被 `Copy-Item -Recurse` 解引用成副本，
 > 导致宿主一直跑旧快照且日志无异常），见 `paper-algo-radar/README.md` 的「装法注意」。
 
