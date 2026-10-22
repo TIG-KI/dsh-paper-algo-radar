@@ -887,120 +887,135 @@ window.__ModuleLoader__.load({
       if (value.fields.length === 0 && value.unclassified === 0)
         return h('div', { style: S.muted }, '还没有领域标签。登记时传 fields 就会出现在这里。');
       const max = Math.max(1, ...value.fields.map((f) => f.count));
+      // 两张卡片共用同一套容器与标题样式，避免「分布」和「矩阵」看起来像两个页面
+      const card = { ...S.box, display: 'flex', flexDirection: 'column', gap: 10 };
+      const cardHead = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minHeight: 22 };
+      const cardTitle = { fontWeight: 600, fontSize: 12.5 };
+      const cardMeta = { ...S.muted };
 
       return h(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: 10 }, 'data-radar-fields': '1' },
+        { style: { display: 'flex', flexDirection: 'column', gap: 10 }, 'data-radar-fields-tab': '1' },
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-          h('span', { style: S.muted }, `共 ${value.total} 篇，分布在 ${value.fields.length} 个领域`),
-          h('span', { style: { flex: 1 } }),
-          h(
-            'button',
-            { style: { ...S.btn, height: 22, fontSize: 11 }, onClick: () => setAsTable((v) => !v) },
-            asTable ? '看条形' : '看表格'
-          )
-        ),
-        asTable
-          ? h(ChartTable, {
-              caption: '领域分布',
-              columns: ['领域', '论文数'],
-              rows: [...value.fields.map((f) => [f.name, f.count]), ...(value.unclassified > 0 ? [['未分类', value.unclassified]] : [])],
-            })
-          : null,
-        ...(asTable ? [] : value.fields).map((f) =>
+          { style: card, 'data-radar-fields': '1' },
           h(
             'div',
-            { key: f.name, style: { display: 'grid', gridTemplateColumns: '160px 1fr 52px', gap: 12, alignItems: 'center' } },
-            h('span', { style: { fontSize: 12.5 } }, f.name),
+            { style: cardHead },
+            h('span', { style: cardTitle }, '领域分布'),
+            h('span', { style: cardMeta }, `共 ${value.total} 篇，分布在 ${value.fields.length} 个领域`),
+            h('span', { style: { flex: 1 } }),
+            h(
+              'button',
+              { style: { ...S.btn, height: 22, fontSize: 11 }, onClick: () => setAsTable((v) => !v) },
+              asTable ? '看条形' : '看表格'
+            )
+          ),
+          asTable
+            ? h(ChartTable, {
+                caption: '领域分布',
+                columns: ['领域', '论文数'],
+                rows: [...value.fields.map((f) => [f.name, f.count]), ...(value.unclassified > 0 ? [['未分类', value.unclassified]] : [])],
+              })
+            : null,
+          ...(asTable ? [] : value.fields).map((f) =>
             h(
               'div',
-              { style: { height: 10, background: 'var(--dsw-alias-border-l2)', borderRadius: 2, overflow: 'hidden' } },
-              h('div', {
-                style: {
-                  width: Math.round((f.count / max) * 100) + '%',
-                  height: '100%',
-                  background: 'var(--dsw-alias-state-business-primary)',
-                  opacity: 0.75,
-                },
-              })
-            ),
-            h('span', { style: { fontFamily: mono, fontSize: 11.5, textAlign: 'right' } }, f.count)
-          )
-        ),
-        value.unclassified > 0 && !asTable ? h('div', { style: S.muted }, `未分类：${value.unclassified} 篇`) : null,
-        matrix.kind === 'ready' && matrix.value.rows.length > 0 && matrix.value.algorithms.length > 0
-          ? h(
-              'div',
-              { style: { ...S.box, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }, 'data-radar-matrix': '1' },
+              { key: f.name, style: { display: 'grid', gridTemplateColumns: '160px 1fr 52px', gap: 12, alignItems: 'center' } },
+              h('span', { style: { fontSize: 12.5 } }, f.name),
               h(
                 'div',
-                { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' } },
-                h('span', { style: { fontWeight: 600, fontSize: 12.5 } }, '领域 × 头部算法'),
-                h('span', { style: S.muted }, `前 ${matrix.value.algorithms.length} 个算法 · ${matrix.value.totalPapers} 篇`)
+                { style: { height: 10, background: 'var(--dsw-alias-border-l2)', borderRadius: 2, overflow: 'hidden' } },
+                h('div', {
+                  style: {
+                    width: Math.round((f.count / max) * 100) + '%',
+                    height: '100%',
+                    background: 'var(--dsw-alias-state-business-primary)',
+                    opacity: 0.75,
+                  },
+                })
               ),
-              h(
-                'div',
-                { style: { overflowX: 'auto' } },
-                h(
-                  'table',
-                  { style: S.table },
-                  h(
-                    'thead',
-                    null,
+              h('span', { style: { fontFamily: mono, fontSize: 11.5, textAlign: 'right' } }, f.count)
+            )
+          ),
+          value.unclassified > 0 && !asTable ? h('div', { style: S.muted }, `未分类：${value.unclassified} 篇`) : null,
+          value.fields.length === 0 ? h('div', { style: S.muted }, '还没有具名领域，论文都在「未分类」下。') : null
+        ),
+        h(
+          'div',
+          { style: card, 'data-radar-matrix': '1' },
+          h(
+            'div',
+            { style: cardHead },
+            h('span', { style: cardTitle }, '领域 × 头部算法'),
+            matrix.kind === 'ready'
+              ? h('span', { style: cardMeta }, `前 ${matrix.value.algorithms.length} 个算法 · ${matrix.value.totalPapers} 篇`)
+              : null
+          ),
+          matrix.kind === 'loading'
+            ? h('div', { style: S.muted }, '正在读矩阵…')
+            : matrix.kind === 'error'
+              ? h('div', { style: S.muted }, '矩阵读取失败：' + matrix.message)
+              : matrix.value.rows.length === 0 || matrix.value.algorithms.length === 0
+                ? h('div', { style: S.muted }, '还没有可统计的领域或算法。')
+                : h(
+                    'div',
+                    { style: { overflowX: 'auto' } },
                     h(
-                      'tr',
-                      null,
-                      h('th', { style: S.th }, '领域'),
-                      ...matrix.value.algorithms.map((item) =>
-                        h(
-                          'th',
-                          { key: item.id, style: { ...S.th, textAlign: 'right', whiteSpace: 'nowrap' }, title: `${item.name}（${item.papers} 篇）` },
-                          item.name
-                        )
-                      )
-                    )
-                  ),
-                  h(
-                    'tbody',
-                    null,
-                    ...matrix.value.rows.map((row) =>
+                      'table',
+                      { style: S.table },
                       h(
-                        'tr',
-                        { key: row.field },
+                        'thead',
+                        null,
                         h(
-                          'td',
-                          { style: S.td },
-                          row.field,
-                          h('span', { style: { ...S.muted, marginLeft: 6, fontFamily: mono, fontSize: 11 } }, row.count)
-                        ),
-                        ...row.cells.map((cell, index) =>
+                          'tr',
+                          null,
+                          h('th', { style: S.th }, '领域'),
+                          ...matrix.value.algorithms.map((item) =>
+                            h(
+                              'th',
+                              { key: item.id, style: { ...S.th, textAlign: 'right', whiteSpace: 'nowrap' }, title: `${item.name}（${item.papers} 篇）` },
+                              item.name
+                            )
+                          )
+                        )
+                      ),
+                      h(
+                        'tbody',
+                        null,
+                        ...matrix.value.rows.map((row) =>
                           h(
-                            'td',
-                            {
-                              key: index,
-                              style: {
-                                ...S.td,
-                                textAlign: 'right',
-                                fontFamily: mono,
-                                fontVariantNumeric: 'tabular-nums',
-                                opacity: cell.papers > 0 ? 1 : 0.35,
-                              },
-                              title: `${row.field} × ${matrix.value.algorithms[index]?.name ?? cell.algorithmId}：${cell.papers} 篇`,
-                            },
-                            cell.papers > 0 ? cell.papers : '·'
+                            'tr',
+                            { key: row.field },
+                            h(
+                              'td',
+                              { style: S.td },
+                              row.field,
+                              h('span', { style: { ...S.muted, marginLeft: 6, fontFamily: mono, fontSize: 11 } }, row.count)
+                            ),
+                            ...row.cells.map((cell, index) =>
+                              h(
+                                'td',
+                                {
+                                  key: index,
+                                  style: {
+                                    ...S.td,
+                                    textAlign: 'right',
+                                    fontFamily: mono,
+                                    fontVariantNumeric: 'tabular-nums',
+                                    opacity: cell.papers > 0 ? 1 : 0.35,
+                                  },
+                                  title: `${row.field} × ${matrix.value.algorithms[index]?.name ?? cell.algorithmId}：${cell.papers} 篇`,
+                                },
+                                cell.papers > 0 ? cell.papers : '·'
+                              )
+                            )
                           )
                         )
                       )
                     )
                   )
-                )
-              )
-            )
-          : matrix.kind === 'error'
-            ? h('div', { style: S.muted }, '矩阵读取失败：' + matrix.message)
-            : null
+        )
       );
     }
 
