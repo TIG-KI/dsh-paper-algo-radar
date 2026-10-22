@@ -945,8 +945,8 @@ async function ingestPdf(store, pdfPath, args) {
   if (!pdfHealth.usable) {
     throw new RadarError(
       'UNSUPPORTED_MEDIA',
-      `这个 PDF 抽出来的不是自然语言（${pdfHealth.reasons.join('；')}），字体多半是 CID/Type0 子集，本工具解不出字形。` +
-        '换条路更省时间：把正文文字复制粘贴进来，或者先用 OCR 转成文本。',
+      `这个 PDF 抽出来的不是自然语言（${pdfHealth.reasons.join('；')}）。CID/Type0 字体只有在带 ToUnicode 映射时才能解码，` +
+        '这份 PDF 可能没有映射或字体是自定义编码。换条路更省时间：把正文文字复制粘贴进来，或者先用 OCR 转成文本。',
       { field: 'pdfPath' },
     )
   }

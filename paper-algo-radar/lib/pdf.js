@@ -1,25 +1,26 @@
 /**
- * 最小 PDF 文本提取器（零依赖）。
+ * PDF 文本提取（零依赖）：**字体感知**优先，逐流启发式兜底。
  *
- * 能做什么：
- *  - 解 `/FlateDecode` 流（zlib inflate）与未压缩流
- *  - 从内容流里取 `(...) Tj`、`[...] TJ`、`'`、`"` 的文本
- *  - 处理转义（`\\(`、`\\)`、`\\\\`、`\\n`、八进制）与十六进制串 `<...>`
- *  - 按 `Td` / `TD` / `T*` / `ET` 粗分段落
+ * 路径一（首选，lib/pdf-fonts.js）：
+ *  - 索引 `N 0 obj … endobj`，把 `/ObjStm` 对象流里的页面/字体也解出来
+ *  - 页面 → `/Resources` → `/Font` → `/ToUnicode` CMap，把**字形号**映射回 Unicode
+ *  - 预定义 CMap：`UniGB-UCS2-H`（UCS2）、`GBK-EUC-H`（GBK）、`B5pc-H`（Big5）
+ *  - 按纵坐标变化断行（中文 PDF 常逐字 `Td`，见到 Td 就断行会把词拆碎）
  *
- * **不能做什么**（会如实报告，不假装成功）：
- *  - Type0 / CID 字体：内容流里是字形编号而不是 Unicode，抽出来是乱码
- *  - 扫描件（整页是图）：没有文本算子，抽不出东西
- *  - 加密 / 需要解密口令的 PDF
- *  - 加密 PDF、对象流（ObjStm）内部的内容流
+ * 路径二（兜底）：任何含 `Tj/TJ/Td/TD/T*` 的流都当正文，逐段用质量闸门筛。
+ * 适用于简单字体（Type1/TrueType）、页面结构不规整、或字体缺 ToUnicode 的混合型 PDF。
  *
- * 因此本模块返回**诊断信息**，由调用方决定是「用」还是「明确告知用户不支持」。
+ * 仍然不做（如实报告，不假装成功）：
+ *  - 没有 ToUnicode 的 CID/Type0（只有字形号，无从映射）
+ *  - 扫描件（整页是图）——需要 OCR
+ *  - 加密 PDF、自定义 Differences 编码的复杂字体
  *
  * @module paper-algo-radar/pdf
  */
 import { inflateSync, inflateRawSync } from 'node:zlib'
 
 import { analyzeText } from './textquality.js'
+import { extractTextWithFonts } from './pdf-fonts.js'
 
 /** 判断字节里有多少「像文本」的字符（用于识别 CID 乱码）。 */
 function textQuality(text) {
@@ -179,6 +180,42 @@ function streamChunks(buffer) {
   return chunks
 }
 
+/** 逐流启发式兜底：任何含文本算子的流都当正文，逐段用质量闸门筛。 */
+function extractByStreamHeuristic(chunks, diagnostics, onDecoded, onDropped) {
+  const pieces = []
+  for (const chunk of chunks) {
+    const isFlate = /\/FlateDecode/.test(chunk.dict)
+    let content = null
+    if (isFlate) {
+      try {
+        content = inflateSync(chunk.bytes).toString('latin1')
+        onDecoded()
+      } catch {
+        try {
+          content = inflateRawSync(chunk.bytes).toString('latin1')
+          onDecoded()
+        } catch {
+          // 解压失败：跳过（可能是图片或其它编码）
+        }
+      }
+    } else {
+      content = chunk.bytes.toString('latin1')
+      onDecoded()
+    }
+    if (content === null) continue
+    if (!/\b(Tj|TJ|Td|TD|T\*)\b/.test(content)) continue
+    const text = extractTextFromContent(content)
+    if (text === '') continue
+    const piece = analyzeText(text)
+    if (!piece.usable || text.length < 20) {
+      onDropped()
+      continue
+    }
+    pieces.push(text)
+  }
+  return pieces.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 /**
  * 提取 PDF 文本。
  * @param {Buffer} buffer
@@ -195,58 +232,35 @@ export function extractPdfText(buffer) {
   const encrypted = /\/Encrypt\s/.test(buffer.subarray(0, 200000).toString('latin1'))
   if (encrypted) diagnostics.push('PDF 已加密（/Encrypt），本工具不解密')
 
-  // 结构性信号：CID/Type0 字体（尤其是 Identity-H）意味着内容流里是字形码，
-  // 解开 ToUnicode 映射才拿得到文字——本工具不做这一步，所以先把话说在前面。
+  // 结构性信号：CID/Type0 字体（中文期刊 PDF 最常见）只能靠 ToUnicode 映射解回文字。
   const cidFont = buffer.includes('/Identity-H') || buffer.includes('/Type0')
-  if (cidFont) diagnostics.push('PDF 里有 CID/Type0 字体（Identity-H）：本工具不解字形映射，抽出的可能是字形码')
+  if (cidFont) diagnostics.push('检测到 CID/Type0 字体，按 ToUnicode 映射解码')
 
   const chunks = streamChunks(buffer)
-  const pieces = []
   let decoded = 0
   let droppedPieces = 0
-  for (const chunk of chunks) {
-    const isFlate = /\/FlateDecode/.test(chunk.dict)
-    let content = null
-    if (isFlate) {
-      try {
-        content = inflateSync(chunk.bytes).toString('latin1')
-        decoded += 1
-      } catch {
-        try {
-          content = inflateRawSync(chunk.bytes).toString('latin1')
-          decoded += 1
-        } catch {
-          // 解压失败：跳过（可能是图片或其它编码）
-        }
-      }
-    } else {
-      content = chunk.bytes.toString('latin1')
-      decoded += 1
-    }
-    if (content === null) continue
-    // 只处理看起来像内容流的部分（含文本算子）
-    if (!/\b(Tj|TJ|Td|TD|T\*)\b/.test(content)) continue
-    const text = extractTextFromContent(content)
-    if (text === '') continue
-    // 逐个流判定：二进制流（图片/字体）里偶尔含 Tj/TJ，解出来是字形码或噪声。
-    // 整段过滤在这里，而不是只判全文——混合型 PDF 里能保住真正的内容流。
-    const piece = analyzeText(text)
-    if (!piece.usable || text.length < 20) {
-      droppedPieces += 1
-      continue
-    }
-    pieces.push(text)
+  let text = ''
+
+  // 路径一（首选）：字体感知。按页面→资源→字体→ToUnicode 解字形码，
+  // 顺带支持对象流（/ObjStm）里打包的页面与字体。
+  const fontAware = extractTextWithFonts(buffer)
+  if (fontAware.text !== '' && analyzeText(fontAware.text).usable) {
+    text = fontAware.text
+    decoded = fontAware.decodedStreams
+    diagnostics.push(...fontAware.diagnostics)
+  } else {
+    // 路径二（兜底）：逐流启发式。简单字体（Type1/TrueType）或页面结构不规整时用它。
+    text = extractByStreamHeuristic(chunks, diagnostics, () => { decoded += 1 }, () => { droppedPieces += 1 })
+    if (droppedPieces > 0) diagnostics.push(`跳过 ${droppedPieces} 个不像正文的流（字形码或二进制）`)
   }
 
-  const text = pieces.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
   const quality = textQuality(text)
-  if (droppedPieces > 0) diagnostics.push(`跳过 ${droppedPieces} 个不像正文的流（字形码或二进制）`)
   if (text !== '' && quality.cidLike / Math.max(1, [...text].length) > 0.3) {
     diagnostics.push('抽出来的字符大量落在私用区，字体可能是 CID/Type0（本工具不支持）')
   }
   const report = analyzeText(text)
   if (text !== '' && !report.usable) {
-    diagnostics.push(`抽出的文本不像自然语言（${report.reasons.join('；')}），字体可能是 CID/Type0（本工具不支持）`)
+    diagnostics.push(`抽出的文本不像自然语言（${report.reasons.join('；')}）；CID 字体若没有 ToUnicode 映射就解不出文字`)
   }
   if (text === '') {
     diagnostics.push(

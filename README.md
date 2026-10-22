@@ -7,7 +7,7 @@ DSH 插件：把读过的论文转成「算法 × 章节 × 年份 × 领域」�
 |---|---|
 | 版本 | `0.2.0`（包名 `dsh-paper-algo-radar`） |
 | 里程碑 | W0 / W1.0 / W1.1 / W1.2 / W2.0 全部交付；87 条 FR 落地 84，3 条 P2 明示未做 |
-| 单元测试 | **859 条 / 27 套件**，`node --test` 全绿，不碰网络、不需要宿主 |
+| 单元测试 | **885 条 / 28 套件**，`node --test` 全绿，不碰网络、不需要宿主 |
 | 端到端 | **94 条**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37），需真实宿主 |
 | 验收批 | **10 PASS / 0 FAIL / 9 SKIP**（SKIP = 需网络凭据或人工抽查，不计入通过） |
 | 模型面向工具 | 19 个（读 9 + 写 10；`radar_text` 仅在 `textReadEnabled` 打开时 +1） |
@@ -17,8 +17,8 @@ DSH 插件：把读过的论文转成「算法 × 章节 × 年份 × 领域」�
 
 ```
 paper-algo-radar/        插件本体（可独立安装，宿主侧零运行时依赖）
-  lib/                   20 个宿主模块 + client.js（客户端，零构建）+ pdf-worker.mjs
-  test/                  27 个单元套件（.test.mjs）+ 5 个 e2e 脚本 + 验收批
+  lib/                   21 个宿主模块 + client.js（客户端，零构建）+ pdf-worker.mjs
+  test/                  28 个单元套件（.test.mjs）+ 5 个 e2e 脚本 + 验收批
   scripts/               维护脚本（repair-corrupt-texts.mjs：清历史乱码正文，默认 dry-run）
   locale/ icon.svg       文案与图标
   package.json           dsh manifest：manifestVersion / bundle.patch / client.inject / engines
@@ -40,7 +40,7 @@ MANIFEST.txt             v0.2.0 交付包 SHA256 清单（历史留档）
 ```bash
 cd paper-algo-radar
 
-# 单元 + 函数级：27 套件 / 859 断言，不需要宿主、不需要网络
+# 单元 + 函数级：28 套件 / 885 断言，不需要宿主、不需要网络
 node --test test/*.test.mjs
 
 # 验收批（§12 用例的可本地执行部分）：PASS / FAIL / SKIP 三态
