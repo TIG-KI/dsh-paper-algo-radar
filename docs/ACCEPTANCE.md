@@ -11,7 +11,7 @@
 
 | 项 | 数 |
 |---|---|
-| 单元测试 | **785 条 / 24 个套件，全绿** |
+| 单元测试 | **932 条 / 29 个套件，全绿** |
 | 端到端（走真实宿主） | **94 条**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37） |
 | 验收批（§12 用例） | **10 PASS / 0 FAIL / 9 SKIP** |
 | 模型面向工具 | **19 个**（读 9 + 写 10；`radar_text` 仅开关打开时 +1） |
@@ -26,7 +26,7 @@ SKIP 的 9 条需要网络凭据、真实模型回合或人工抽查，**不计�
 
 | 层 | 手段 | 证据 |
 |---|---|---|
-| 纯函数 | `node test/*.test.mjs` | 785 条断言 |
+| 纯函数 | `node test/*.test.mjs` | 932 条断言 |
 | 服务层 | 假 ctx + 假 HTTP 服务器 | 工具注册、审批、限速缓存、子进程 |
 | 宿主集成 | 隔离 `DSH_HOME` + 真实 dsh 进程 | `test/e2e-*.mjs` |
 | 界面 | 无头 Chrome + CDP 探针 | `spike/evidence/*.png` |
@@ -43,8 +43,8 @@ SKIP 的 9 条需要网络凭据、真实模型回合或人工抽查，**不计�
 **证据**：`test/{extract,migrate,ranking,dedupe}.test.mjs`；`spike/evidence/radar-w0-*.png`
 
 ### W1.0 · 可用（15 条）
-正文留存 `texts/`（gzip + sha1）、原地重算（默认 dryRun）、导入（三种形态）、写能力开关 + 写审批、`/radar` 命令、算法下钻、快速添加（DOI / arXiv）、自带三源并发检索。
-**证据**：`test/{reextract,import,approval,command,algorithm,sources}.test.mjs`；`spike/evidence/w1-detail.png`
+正文留存 `texts/`（gzip + sha1）、原地重算（默认 dryRun）、导入（三种形态）、写能力开关 + 写审批、`/radar` 命令、算法下钻、快速添加（DOI / arXiv）、自带三源并发检索、系统提示段（FR-8.8，随 `writeEnabled` 切换并禁止 shell 绕道）。
+**证据**：`test/{reextract,import,approval,command,algorithm,sources,prompt}.test.mjs`；`spike/evidence/w1-detail.png`
 
 ### W1.1 · 好看（36 条）
 撤销 / 清空 / 恢复（10 秒窗口）、趋势、领域分布、示例数据包、空状态三入口、响应式（720px）、图表表格视图、检索限速与缓存、PDF 登记（子进程 + 超时强杀）。
@@ -70,6 +70,7 @@ SKIP 的 9 条需要网络凭据、真实模型回合或人工抽查，**不计�
 | 加载期零副作用（不读盘 / 不写盘 / 不探测） | `status` E21 |
 | 破坏性操作默认 dryRun，无审批通道时失败关闭 | `approval` / `import` / `undo` |
 | `writeEnabled=false` 时不注册写工具且写接口 403 | `approval` + 宿主实测 |
+| 系统提示段随 `writeEnabled` 切换；写关闭时明令禁止 shell / 改 `store.json` 绕道 | `prompt` |
 | 排序用码位比较，不用 `localeCompare` | `ranking` |
 | 覆盖率分母跟随筛选，4 位小数 | `ranking` / 面板 |
 

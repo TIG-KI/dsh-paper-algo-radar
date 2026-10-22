@@ -13,7 +13,7 @@
 | W1.0 需求条数 | 13 |
 | 拆成任务 | **8 个** |
 | 已完成 | **8 / 8** ✅ W1.0 全部完成 |
-| 测试 | **785 单元（24 套件）+ 94 端到端**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37） |
+| 测试 | **932 单元（29 套件）+ 94 端到端**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37） |
 | W1.1 进度 | **5 / 5 任务完成** ✅ |
 
 ---
@@ -55,15 +55,17 @@
 - **E6 状态**：W1.1 补上 `radar_clear` 后，**「导出 → 清空 → 导入」已完整跑通**（`test/acceptance.mjs` 的 E6：清空 2 篇、回来后 2 篇 / 12 条提及完全一致）。E16（导入 v0.2 保持 5 篇）也在单元测试里覆盖。
 
 ### W1-04 · 写能力开关与审批 ✅ **已完成**
-- **FR**：8.5 / 8.6 / 8.7
+- **FR**：8.5 / 8.6 / 8.7 / 8.8
 - **已做**：
   - **`writeEnabled` 配置**（`cordis.patch.yml` 的 `config.writeEnabled`，默认 true）。false 时**不注册任何写工具**，且 `/scan`、`/register-one`、`/remove`、`/reextract`、`/import` 一律 403 `CAPABILITY_OFF`。
+  - **系统提示段（FR-8.8）** `lib/prompt.js`：经 `ctx.systemPrompt.section({name, order, text})` 注册常驻策略段（`paper-algo-radar:policy`，order = `TOOL_COMPUTER_USE - 60`）。`text` 是 provider，每次组装重读 `writeEnabled` / `textReadEnabled`；写关闭时明确禁止用 shell / 解释器 / 直接编辑 `store.json` / `texts/` 绕道。注册走 `ctx.effect`，卸载即释放；`/state.prompt` 暴露注册结果。
   - **写审批闸门** `lib/approval.js`：`ctx.get('approval')` + `exec.agent` → `approval.request(...)`，结算表与宿主一致：`allowed-once` → allowed；`rejected`/`cancelled` → declined；`unavailable`/异常/无服务/无 agent → **失败关闭**。
   - `radar_import` 的 `mode=overwrite` 且 `dryRun=false` 才要求审批（预览不打扰用户）。
   - `dryRun` 默认 true：`radar_reextract`、`radar_import` 都是。
 - **已验**：
   - `test/approval.test.mjs` **27/27**（结算表五种取值、五种失败关闭、请求形状、文案、开关三态）
   - `test/import.test.mjs` **41/41**（拒绝时库不动、无服务失败关闭、无 agent 失败关闭）
+  - `test/prompt.test.mjs` **44/44**（激活即注册、两态文本、越权禁令、dispose 释放、无 systemPrompt 服务降级、order 兜底）
   - **宿主实测**：`writeEnabled:false` 覆盖后重启 → 工具从 10 个降到 **6 个读工具**、`capabilities.write=false`、`POST /scan` 返回 **403 `CAPABILITY_OFF`**、论文数保持 5 不变；恢复配置后回到 10 个工具。
 - **注意**：本会话的审批策略是 `never`（提示被禁用），所以 `request()` 会直接拒绝 —— 在无审批通道的环境里 overwrite 导入**不可能通过**，这是设计意图。
 - **未验**：`allowed-once` 的真实放行路径（本会话策略不允许弹审批）。

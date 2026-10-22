@@ -25,6 +25,7 @@ import { analyzeText, sanitizeText } from './textquality.js'
 import { planImport } from './importer.js'
 import { discover as discoverSources, fetchArxivFullText, resolveArxiv, resolveDoi } from './sources.js'
 import { registerRadarCommand } from './command.js'
+import { registerPromptSection } from './prompt.js'
 import { describeApprovalVerdict, requestWriteApproval } from './approval.js'
 import { UndoStack } from './undo.js'
 import { backupStatus, maybeDailyBackup } from './backup.js'
@@ -50,7 +51,7 @@ import {
 } from './keys.js'
 
 export const name = 'paper-algo-radar'
-export const inject = ['tools']
+export const inject = ['tools', 'systemPrompt']
 
 /** 面板与工具共用：算法类型的中文标签（客户端也有一份同义映射）。 */
 const TYPE_LABELS = { DL: '深度学习', ML: '机器学习', MATH: '数学与优化' }
@@ -683,6 +684,7 @@ function buildState(store, options = {}) {
     schemaVersion: SCHEMA_VERSION,
     dictVersion: dictVersionOf(store),
     tools: REGISTERED_TOOL_NAMES,
+    prompt: PROMPT_STATE,
     migration: store.migration,
     algorithms,
     papers,
@@ -1298,6 +1300,9 @@ function buildStatusTool(getStore) {
           value.abstractOnlyCount > 0 ? `其中 ${value.abstractOnlyCount} 篇仅摘要` : null,
           value.staleMentions > 0 ? `⚠ ${value.staleMentions} 条提及是旧口径（可用 radar_reextract 重算，W1.0）` : null,
           `工具：${(value.tools ?? []).join(', ')}`,
+          value.prompt?.registered
+            ? `系统提示段：已注册（${value.prompt.name} @ ${value.prompt.order}）`
+            : `系统提示段：未注册（${value.prompt?.reason ?? '未知原因'}）`,
         ].filter((line) => line !== null)
         return [{ type: 'text', text: lines.join('\n') }]
       },
@@ -1341,6 +1346,7 @@ async function statusSnapshot(store) {
     candidates: candidateStats(store),
     guide: { enabled: GUIDE_ENABLED, dismissed: store.meta.get('guide')?.dismissed === true },
     tools: REGISTERED_TOOL_NAMES,
+    prompt: PROMPT_STATE,
     command: COMMAND_STATE,
     capabilities: { write: WRITE_ENABLED, textRead: TEXT_READ_ENABLED },
     migration: store.migration,
@@ -3683,6 +3689,9 @@ let REGISTERED_TOOL_NAMES = []
 /** `/radar` 命令的注册结果（`/state.command` 会带出去）。 */
 let COMMAND_STATE = { registered: false, reason: '尚未加载' }
 
+/** FR-8.8 系统提示段的注册结果（`/state.prompt` 会带出去，便于宿主内验证）。 */
+let PROMPT_STATE = { registered: false, name: '', order: 0, reason: '尚未加载' }
+
 /** 写能力开关（`/state.capabilities.write` 会带出去）。 */
 let WRITE_ENABLED = true
 
@@ -3700,9 +3709,8 @@ let TEXT_READ_ENABLED = false
 
 /**
  * 首次激活引导（§7 FR-11.3）：**在面板里**显示一次性提示，可关。
- * 为什么不是「会话注入」：宿主那条路是 `ctx.systemPrompt.section({name, order, text})`，
- * `order` 取自宿主枚举，且没有真实模型回合就无法验证它真的进了提示词；
- * 与其发一条没验过的注入，不如在可控面上做可验证的等价引导。
+ * 注意它和 FR-8.8 的常驻策略段不是一回事：策略段常驻、管跨工具决策（见 prompt.js）；
+ * 这里只是一次性的新手提示，放在可控面板上比往会话里塞一条难验证的注入更稳。
  */
 let GUIDE_ENABLED = true
 
@@ -3729,6 +3737,13 @@ export async function apply(ctx, config = {}) {
   CAP_PER_PAPER = clampInt(config?.capPerPaper ?? 0, 0, 1000)
   TEXT_READ_ENABLED = config?.textReadEnabled === true
   GUIDE_ENABLED = config?.welcomeGuide !== false
+
+  // FR-8.8：注册 model-facing 系统提示段。text 是 provider，每次组装时重读配置，
+  // 所以 writeEnabled 切换后提示词跟着变，不需要重新注册。
+  PROMPT_STATE = registerPromptSection(ctx, () => ({
+    writeEnabled: WRITE_ENABLED,
+    textReadEnabled: TEXT_READ_ENABLED,
+  }))
 
   // FR-10.5 加载期零副作用：不读盘、不写盘、不探测。
   // 存储只在第一次真正被用到（工具调用或面板请求）时打开，且只打开一次。
