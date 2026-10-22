@@ -16,7 +16,7 @@ import { RadarError } from './errors.js'
 import { buildMatchers } from './extract.js'
 
 /** 种子口径版本：词典没被改过时就用它。 */
-export const SEED_DICT_VERSION = '2026.10.1'
+export const SEED_DICT_VERSION = '2026.10.2'
 
 const matcherCache = new Map()
 
