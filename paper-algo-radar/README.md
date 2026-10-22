@@ -78,6 +78,7 @@ lib/sources.js        OpenAlex / Crossref / arXiv 三源并发 + 合并去重 + 
 lib/undo.js           撤销栈：懒过期，窗口内保留正文
 lib/samples.js        示例数据包：6 篇可抽取正文
 lib/pdf.js            零依赖 PDF 文本提取（FlateDecode + 文本算子）
+lib/textquality.js    正文可用性判定：控制符/私用区/常见文字占比，拦住字形码与二进制
 lib/pdf-worker.mjs    PDF 解析子进程入口
 lib/pdfrun.js         子进程封装：超时 SIGKILL + 可注入
 lib/dict.js           词典管理：运行时匹配器 + 口径版本
@@ -86,7 +87,8 @@ lib/candidates.js     新词候选队列（插件不调 LLM）
 lib/keys.js           论文三键与 DOI / arXiv 归一（index 与 migrate 共用）
 lib/client.js         客户端：手写模块加载器格式，零构建；注册双槽位 + 排行视图
 icon.svg  locale/     图标与文案
-test/                 785 单元 + 57 端到端（抽取 60 / 工具 37 / 迁移 42 / 排行 49 / 去重 37 / 状态 24 / 错误 23 / 导出 26 / 留存重算 29 / 导入 41 / 下钻 26 / 命令 28 / 闸门 27 / 多源 39 / 轮转 5 / 撤销 48 / 趋势 28 / 示例 39 / 限速 12 / PDF 35 / 共现 29 / 词典 35 / W2.0 33 / 候选 33 / e2e 16+13+15+13）+ 验收批
+scripts/              一次性维护脚本：repair-corrupt-texts.mjs（清历史乱码正文，默认 dry-run）
+test/                 816 单元 + 57 端到端（抽取 60 / 工具 37 / 迁移 42 / 排行 49 / 去重 37 / 状态 24 / 错误 23 / 导出 26 / 留存重算 29 / 导入 41 / 下钻 26 / 命令 28 / 闸门 27 / 多源 39 / 轮转 5 / 撤销 48 / 趋势 28 / 示例 39 / 限速 12 / PDF 41 / 共现 29 / 词典 35 / W2.0 33 / 候选 33 / 正文质量 25 / e2e 16+13+15+13）+ 验收批
 ```
 
 **宿主侧刻意保持零依赖**：插件以符号链接方式安装时，裸包名（`@deepseek-ai/*`）在工作区路径下解析不到。客户端不受此限——它走 `__ModuleLoader__`，可以 `require('react')`。
@@ -119,7 +121,7 @@ node test\status.test.mjs                                   # 加载期零副作
 node test\e2e-scan.mjs http://127.0.0.1:52699 <token>        # 端到端：16 条，走真实路由
 ```
 
-合计 **785 条单元 + 57 条端到端**，外加验收批 **10 PASS / 0 FAIL / 9 SKIP**。端到端脚本会真实登记一篇「T-02 端到端验证论文」、补年份再登记一次、断言同一篇、确认返回体里没有正文，然后删掉自己——跑完不留脏数据。
+合计 **816 条单元 + 57 条端到端**，外加验收批 **10 PASS / 0 FAIL / 9 SKIP**。端到端脚本会真实登记一篇「T-02 端到端验证论文」、补年份再登记一次、断言同一篇、确认返回体里没有正文，然后删掉自己——跑完不留脏数据。
 
 | 工具 | 说明 |
 |---|---|
@@ -171,6 +173,36 @@ Get-Process -Name "DeepSeek Harness" | Select-Object Id,StartTime
 
 **处理**：完全退出应用再启动（不是关窗口）。重启后 `/state` 的 `tools` 数量应为 19（或 18，取决于
 `textReadEnabled`），且包含 `radar_trends` / `radar_cooccurrence` 等新工具。
+
+## 排障：面板里的正文 / 片段是乱码
+
+症状：论文标题正常，但片段全是 `ä¸_`、私用区方块、`1⁄4` 之类的字符。
+
+根因（v0.2 及更早）：`lib/pdf.js` 把「含 Tj/TJ 的流」一律当内容流，于是
+
+1. 图片 / 字体等**二进制流**偶尔含 `Tj`，解出来是噪声；
+2. **CID/Type0 字体（Identity-H）** 的内容流里是字形码，不是文字——本工具不解析 ToUnicode 映射。
+
+两者都会产出「字符很多、没有一个词」的文本，而当时的闸门只检查长度 ≥ 300，于是以乱码入库，
+排行与片段全部由它派生。
+
+现在有三道闸：
+
+| 闸 | 位置 | 行为 |
+|---|---|---|
+| 单流过滤 | `lib/pdf.js` | 每个流先过 `analyzeText`，不像正文的整段丢弃 |
+| 全文闸门 | `lib/index.js` | 抽完仍不像自然语言 → `UNSUPPORTED_MEDIA`，提示改用粘贴 / OCR |
+| 入库闸门 | `lib/index.js` `ingestPaper` | 任何来源（PDF / 粘贴 / 批量）都先判定，再清洗控制符 |
+
+**已经入库的乱码正文不可恢复**（PDF 原件按设计不留），用维护脚本清理：
+
+```bash
+node scripts/repair-corrupt-texts.mjs            # 体检，不写任何东西
+node scripts/repair-corrupt-texts.mjs --apply    # 清理：保留论文记录，清正文 + 派生提及
+node scripts/repair-corrupt-texts.mjs --apply --mode delete-papers   # 连论文记录一起删
+```
+
+`--apply` 前**先退出宿主**（算法库常驻内存，边跑边改会被写回），并会自动备份 `store.json`。
 
 ## 已知问题（都在 W0_TASKS.md 里排了）
 

@@ -45,13 +45,22 @@ if ([...BODY].length < 300) throw new Error('测试正文太短：' + [...BODY].
 
 /** 生成一个最小可解析 PDF。`compressed` 决定内容流是否 Flate。 */
 function makePdf({ text, compressed = false, withText = true }) {
-  // 内容流：逐行 BT/Td/Tj/ET，模拟真实排版
+  // 内容流：逐行 BT/Td/Tj/ET，模拟真实排版。
+  // 非 ASCII 用十六进制 UTF-16BE 串（`<...> Tj`）——真实 PDF 就是这么存中文的；
+  // 用 latin1 直接写中文会被截断成乱码，那不是合法的测试素材。
   const lines = withText ? String(text).match(/.{1,60}/g) ?? [] : []
   let content = ''
   if (withText) {
     lines.forEach((line, index) => {
-      const escaped = line.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
-      content += `BT /F1 12 Tf 72 ${740 - index * 16} Td (${escaped}) Tj ET\n`
+      const isAscii = [...line].every((ch) => ch.codePointAt(0) < 0x80)
+      let shown
+      if (isAscii) {
+        shown = `(${line.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')})`
+      } else {
+        const hex = [...line].map((ch) => ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')).join('')
+        shown = `<${hex}>`
+      }
+      content += `BT /F1 12 Tf 72 ${740 - index * 16} Td ${shown} Tj ET\n`
     })
   } else {
     // 纯图页：只有画图算子，没有文本
@@ -113,7 +122,8 @@ try {
   check('标题从正文首行猜出来', String(added.paper?.title ?? '').length > 8, added.paper?.title)
   check('留存了正文（可重算）', added.paper?.hasText === true)
   check('回报了 pdf.discarded', added.pdf?.discarded === true)
-  check('没有回显正文', !JSON.stringify({ ...added, pdf: undefined }).includes('双向 LSTM 编码上下文'))
+  // 标题允许从首行猜（≤120 字符），所以断言用正文靠后的句子：正文任何一段都不该被回显。
+  check('没有回显正文', !JSON.stringify({ ...added, pdf: undefined }).includes('按句长分层后重新评估'))
   check('texts/ 里只有留存的正文，没有 PDF', (await readdir(join(dir, 'texts'))).every((f) => f.endsWith('.txt.gz')), (await readdir(join(dir, 'texts'))).join(','))
 
   console.log('\n[4] 扫描件必须明确失败')
@@ -193,6 +203,36 @@ try {
     bigError = error
   }
   check('超大 → PAYLOAD_TOO_LARGE', bigError?.code === 'PAYLOAD_TOO_LARGE', String(bigError?.code))
+
+  console.log('\n[9] 乱码闸门：字形码 / 二进制不能进库')
+  // 长度足够（>300）但全是控制符：真实 PDF 里 CID 字体、被误当内容流的图片流就是这样。
+  const garbageText = Array.from({ length: 400 }, (_, i) => String.fromCharCode(1 + ((i * 37) % 31))).join('')
+  const garbagePdf = makePdf({ text: garbageText })
+  const garbageQuality = extractPdfText(garbagePdf)
+  check('字形码文本被判不可用', garbageQuality.quality?.usable === false, JSON.stringify(garbageQuality.quality))
+  check('给出了跳过流的诊断', garbageQuality.diagnostics.some((d) => d.includes('跳过')), JSON.stringify(garbageQuality.diagnostics))
+
+  const garbagePath = join(dir, 'garbage.pdf')
+  await writeFile(garbagePath, garbagePdf)
+  const beforeCount = store.papers.size
+  let garbageError = null
+  try {
+    await addTool.execute({ pdfPath: garbagePath })
+  } catch (error) {
+    garbageError = error
+  }
+  check('登记被拒（UNSUPPORTED_MEDIA）', garbageError?.code === 'UNSUPPORTED_MEDIA', String(garbageError?.code))
+  check('提示里给出替代方案', /粘贴|OCR/.test(String(garbageError?.message ?? '')), garbageError?.message?.slice(0, 60))
+  check('没有多出论文', store.papers.size === beforeCount, `${store.papers.size} vs ${beforeCount}`)
+
+  // 粘贴路径同样要拦：把二进制内容当正文传进来，不该静默入库
+  let pasteError = null
+  try {
+    await addTool.execute({ title: '二进制内容', text: garbageText })
+  } catch (error) {
+    pasteError = error
+  }
+  check('粘贴二进制 → VALIDATION', pasteError?.code === 'VALIDATION', String(pasteError?.code))
 } finally {
   setPdfRunner(null)
   await rm(dir, { recursive: true, force: true })

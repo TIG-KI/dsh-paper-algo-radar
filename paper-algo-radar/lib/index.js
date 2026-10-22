@@ -21,6 +21,7 @@ import { migrateSnapshot, SCHEMA_VERSION } from './migrate.js'
 import { boundResult, clampInt, compareCodePoints, paginate, READ_TOOL_NAMES, WRITE_TOOL_NAMES } from './contract.js'
 import { RadarError, toErrorPayload, toHttpError } from './errors.js'
 import { readText, removeText, writeText } from './texts.js'
+import { analyzeText, sanitizeText } from './textquality.js'
 import { planImport } from './importer.js'
 import { discover as discoverSources, fetchArxivFullText, resolveArxiv, resolveDoi } from './sources.js'
 import { registerRadarCommand } from './command.js'
@@ -372,8 +373,23 @@ async function ingestPaper(store, input) {
       )
     }
   }
+  // 闸门：正文必须像自然语言。真实 PDF 里的 CID/Type0 字体、被误当内容流的二进制流，
+  // 都会产出「字符很多、没有一个词」的文本——长度校验拦不住，最后以乱码进库。
+  // 判定必须在清洗之前（清洗会抹掉控制字符比例这条证据）。
+  if (rawText !== '') {
+    const health = analyzeText(rawText)
+    if (!health.usable) {
+      throw new RadarError(
+        'VALIDATION',
+        `正文不像自然语言（${health.reasons.join('；')}）。这通常是把 PDF / 二进制内容当成正文传进来了：` +
+          '请粘贴正文文字，或先用 OCR / 复制文本再登记。',
+        { field: 'text' },
+      )
+    }
+  }
+  const cleanText = sanitizeText(rawText)
   // 抽取是纯函数（R1–R8 全在 lib/extract.js）：输入原文，拿回统计文本、命中与告警。
-  const extracted = extract(input?.text ?? '', activeMatchers(store), {
+  const extracted = extract(cleanText, activeMatchers(store), {
     dictVersion: dictVersionOf(store),
     depth,
     source: input?.source,
@@ -901,6 +917,16 @@ async function ingestPdf(store, pdfPath, args) {
       'UNSUPPORTED_MEDIA',
       `这个 PDF 里没有可提取的文本（${(parsed?.diagnostics ?? []).join('；') || '多半是扫描件'}）。` +
         '请改用 OCR 后的文本，或直接把正文粘过来。',
+      { field: 'pdfPath' },
+    )
+  }
+  // 质量闸门：字形码 / 二进制噪声不能进库。长度够、但没有一个词，就是这种情况。
+  const pdfHealth = analyzeText(text)
+  if (!pdfHealth.usable) {
+    throw new RadarError(
+      'UNSUPPORTED_MEDIA',
+      `这个 PDF 抽出来的不是自然语言（${pdfHealth.reasons.join('；')}），字体多半是 CID/Type0 子集，本工具解不出字形。` +
+        '换条路更省时间：把正文文字复制粘贴进来，或者先用 OCR 转成文本。',
       { field: 'pdfPath' },
     )
   }

@@ -19,6 +19,8 @@
  */
 import { inflateSync, inflateRawSync } from 'node:zlib'
 
+import { analyzeText } from './textquality.js'
+
 /** 判断字节里有多少「像文本」的字符（用于识别 CID 乱码）。 */
 function textQuality(text) {
   if (text === '') return { printableRatio: 0, cidLike: 0 }
@@ -185,7 +187,7 @@ function streamChunks(buffer) {
 export function extractPdfText(buffer) {
   const diagnostics = []
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
-    return { text: '', streams: 0, decoded: 0, encrypted: false, quality: { printableRatio: 0, cidLike: 0 }, diagnostics: ['空文件'] }
+    return { text: '', streams: 0, decoded: 0, encrypted: false, quality: { printableRatio: 0, cidLike: 0, usable: false }, diagnostics: ['空文件'] }
   }
   const head = buffer.subarray(0, 1024).toString('latin1')
   if (!head.includes('%PDF-')) diagnostics.push('文件头里没有 %PDF-，可能不是 PDF')
@@ -193,9 +195,15 @@ export function extractPdfText(buffer) {
   const encrypted = /\/Encrypt\s/.test(buffer.subarray(0, 200000).toString('latin1'))
   if (encrypted) diagnostics.push('PDF 已加密（/Encrypt），本工具不解密')
 
+  // 结构性信号：CID/Type0 字体（尤其是 Identity-H）意味着内容流里是字形码，
+  // 解开 ToUnicode 映射才拿得到文字——本工具不做这一步，所以先把话说在前面。
+  const cidFont = buffer.includes('/Identity-H') || buffer.includes('/Type0')
+  if (cidFont) diagnostics.push('PDF 里有 CID/Type0 字体（Identity-H）：本工具不解字形映射，抽出的可能是字形码')
+
   const chunks = streamChunks(buffer)
   const pieces = []
   let decoded = 0
+  let droppedPieces = 0
   for (const chunk of chunks) {
     const isFlate = /\/FlateDecode/.test(chunk.dict)
     let content = null
@@ -219,13 +227,26 @@ export function extractPdfText(buffer) {
     // 只处理看起来像内容流的部分（含文本算子）
     if (!/\b(Tj|TJ|Td|TD|T\*)\b/.test(content)) continue
     const text = extractTextFromContent(content)
-    if (text !== '') pieces.push(text)
+    if (text === '') continue
+    // 逐个流判定：二进制流（图片/字体）里偶尔含 Tj/TJ，解出来是字形码或噪声。
+    // 整段过滤在这里，而不是只判全文——混合型 PDF 里能保住真正的内容流。
+    const piece = analyzeText(text)
+    if (!piece.usable || text.length < 20) {
+      droppedPieces += 1
+      continue
+    }
+    pieces.push(text)
   }
 
   const text = pieces.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
   const quality = textQuality(text)
+  if (droppedPieces > 0) diagnostics.push(`跳过 ${droppedPieces} 个不像正文的流（字形码或二进制）`)
   if (text !== '' && quality.cidLike / Math.max(1, [...text].length) > 0.3) {
     diagnostics.push('抽出来的字符大量落在私用区，字体可能是 CID/Type0（本工具不支持）')
+  }
+  const report = analyzeText(text)
+  if (text !== '' && !report.usable) {
+    diagnostics.push(`抽出的文本不像自然语言（${report.reasons.join('；')}），字体可能是 CID/Type0（本工具不支持）`)
   }
   if (text === '') {
     diagnostics.push(
@@ -233,5 +254,12 @@ export function extractPdfText(buffer) {
     )
   }
 
-  return { text, streams: chunks.length, decoded, encrypted, quality, diagnostics }
+  return {
+    text,
+    streams: chunks.length,
+    decoded,
+    encrypted,
+    quality: { ...quality, ...report, usable: report.usable, cidFont },
+    diagnostics,
+  }
 }
