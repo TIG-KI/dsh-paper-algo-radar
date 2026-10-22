@@ -42,6 +42,7 @@
 | **趋势视图（行=算法 × 列=年份 网格）** | ✅ 已实现并实测 |
 | **领域分布（横向条形）** | ✅ 已实现并实测 |
 | **领域 × 头部算法矩阵**（行=领域、列=Top N 算法；`radar_matrix` + `/matrix` + 领域页表格） | ✅ 已实现并测试 |
+| **Markdown 报告**（`radar_report`：review 10 章 / decide 5 章 / insight 5 节，落 `exports/reports/`，内容不进上下文） | ✅ 已实现并验证 |
 | **类型 / 关键词 / 领域筛选 + 分母跟随** | ✅ 已实现并实测 |
 | **示例数据包**（默认不计入统计，可载入/清除/转正） | ✅ 已实现并实测 |
 | **空状态三入口** | ✅ 已实现并实测 |
@@ -93,7 +94,7 @@ lib/keys.js           论文三键与 DOI / arXiv 归一（index 与 migrate 共
 lib/client.js         客户端：手写模块加载器格式，零构建；注册双槽位 + 排行视图
 icon.svg  locale/     图标与文案
 scripts/              一次性维护脚本：repair-corrupt-texts.mjs（清历史乱码正文，默认 dry-run）
-test/                 1033 单元 + 57 端到端（抽取 60 / 工具 37 / 迁移 42 / 排行 49 / 去重 37 / 状态 24 / 错误 23 / 导出 26 / 留存重算 29 / 导入 41 / 下钻 26 / 命令 28 / 闸门 27 / 多源 53 / 检索过滤 18 / 轮转 5 / 撤销 48 / 趋势 28 / 示例 39 / 限速 12 / PDF 41 / CID PDF 29 / 客户端词典 20 / 智能优化词典 23 / 共现 29 / 词典 35 / W2.0 33 / 候选 33 / 正文质量 25 / 提示段 44 / 引擎 40 / 矩阵 29 / e2e 16+13+15+13）+ 验收批
+test/                 1296 单元 + 57 端到端（抽取 60 / 工具 37 / 迁移 42 / 排行 49 / 去重 37 / 状态 24 / 错误 23 / 导出 26 / 留存重算 29 / 导入 41 / 下钻 26 / 命令 28 / 闸门 27 / 多源 53 / 检索过滤 18 / 轮转 5 / 撤销 48 / 趋势 28 / 示例 39 / 限速 12 / PDF 41 / CID PDF 29 / 客户端词典 20 / 智能优化词典 23 / 共现 29 / 词典 35 / W2.0 33 / 候选 33 / 正文质量 25 / 提示段 44 / 引擎 40 / 矩阵 29 / e2e 16+13+15+13）+ 验收批
 ```
 
 **宿主侧刻意保持零依赖**：插件以符号链接方式安装时，裸包名（`@deepseek-ai/*`）在工作区路径下解析不到。客户端不受此限——它走 `__ModuleLoader__`，可以 `require('react')`。
@@ -123,10 +124,16 @@ node test\migrate.test.mjs                                  # 迁移器：42 条
 node test\ranking.test.mjs                                  # 排行/论文/契约件/旧口径：49 条，不需要宿主
 node test\dedupe.test.mjs                                   # 去重与原子写：37 条，不需要宿主
 node test\status.test.mjs                                   # 加载期零副作用 + radar_status：24 条
+node test\report.test.mjs                                  # 报告渲染 + 缺口规则 + 只读：107 条
+node test\insight.test.mjs                                 # 领域洞察（E33/E34/E36/E37）：42 条
+node test\ranking-field.test.mjs                           # BUG-1 回归（E35）：22 条
+node test\provenance.test.mjs                              # 来源/幂等/venue 归一（E38-E42）：52 条
+node test\venue-discover.test.mjs                          # discover 白名单过滤 + insight 分层（E43/E44）：32 条
+node test\e2e-report.mjs http://127.0.0.1:52699 <token>      # 端到端：21 条（需宿主）
 node test\e2e-scan.mjs http://127.0.0.1:52699 <token>        # 端到端：16 条，走真实路由
 ```
 
-合计 **1033 条单元 + 57 条端到端**，外加验收批 **10 PASS / 0 FAIL / 9 SKIP**。端到端脚本会真实登记一篇「T-02 端到端验证论文」、补年份再登记一次、断言同一篇、确认返回体里没有正文，然后删掉自己——跑完不留脏数据。
+合计 **1296 条单元 + 57 条端到端**，外加验收批 **10 PASS / 0 FAIL / 9 SKIP**。端到端脚本会真实登记一篇「T-02 端到端验证论文」、补年份再登记一次、断言同一篇、确认返回体里没有正文，然后删掉自己——跑完不留脏数据。
 
 | 工具 | 说明 |
 |---|---|
@@ -146,6 +153,7 @@ node test\e2e-scan.mjs http://127.0.0.1:52699 <token>        # 端到端：16 �
 | `radar_trends` | 按年份看若干算法的论文数；缺年份单独计数 |
 | `radar_fields` | 领域分布 + 未分类篇数 |
 | `radar_matrix` | 领域 × 头部算法矩阵（topN / field，默认 8 列，示例默认不计入） |
+| `radar_report` | 生成 Markdown 报告落盘（`mode=review\|decide\|insight`、`scope=all\|field\|yearRange`、`windowDays`、`generatedAt`、`narrative`、`path`）；`insight` 必须给 `field`；只回 `{path, bytes, sections}`，**不返回内容** |
 | `radar_cooccurrence` | 同篇共现的算法对 + lift，可按领域过滤 |
 | `radar_dictionary` | 词典管理：list / add / update / remove / moveAlias（改动会推口径版本） |
 | `radar_text` | **仅 `textReadEnabled=true` 时注册**；读留存正文，单次 ≤8,000 字符，唯一正文出口 |

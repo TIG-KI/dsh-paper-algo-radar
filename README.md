@@ -7,10 +7,10 @@ DSH 插件：把读过的论文转成「算法 × 章节 × 年份 × 领域」�
 |---|---|
 | 版本 | `0.2.0`（包名 `dsh-paper-algo-radar`） |
 | 里程碑 | W0 / W1.0 / W1.1 / W1.2 / W2.0 全部交付；87 条 FR 落地 84，3 条 P2 明示未做 |
-| 单元测试 | **1033 条 / 32 套件**，`node --test` 全绿，不碰网络、不需要宿主 |
-| 端到端 | **94 条**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37），需真实宿主 |
+| 单元测试 | **1296 条 / 38 套件**，`node --test` 全绿，不碰网络、不需要宿主 |
+| 端到端 | **115 条**（scan 16 / reextract 13 / import 15 / 网络 13 / 完整路径 37），需真实宿主 |
 | 验收批 | **10 PASS / 0 FAIL / 9 SKIP**（SKIP = 需网络凭据或人工抽查，不计入通过） |
-| 模型面向工具 | 20 个（读 10 + 写 10；`radar_text` 仅在 `textReadEnabled` 打开时 +1） |
+| 模型面向工具 | 21 个（读 11 + 写 10；`radar_text` 仅在 `textReadEnabled` 打开时 +1） |
 | HTTP 路由 | 13 个 exact 端点；面板 7 个标签页（排行 / 论文 / 趋势 / 领域 / 共现 / 词典 / 设置） |
 
 ## 仓库结构
@@ -23,7 +23,7 @@ paper-algo-radar/        插件本体（可独立安装，宿主侧零运行时�
   locale/ icon.svg       文案与图标
   package.json           dsh manifest：manifestVersion / bundle.patch / client.inject / engines
   cordis.patch.yml       bundle 安装时的插入行（writeEnabled 总开关）
-  README.md              插件细节：模块职责、20 个工具、装法与排障
+  README.md              插件细节：模块职责、21 个工具、装法与排障
 docs/                    PRD、W0/W1 任务清单、交付验收报告
 spike/evidence/          验收截图（docs/ACCEPTANCE.md 引用的证据）
 MANIFEST.txt             v0.2.0 交付包 SHA256 清单（历史留档）
@@ -40,7 +40,7 @@ MANIFEST.txt             v0.2.0 交付包 SHA256 清单（历史留档）
 ```bash
 cd paper-algo-radar
 
-# 单元 + 函数级：32 套件 / 1033 断言，不需要宿主、不需要网络
+# 单元 + 函数级：38 套件 / 1296 断言，不需要宿主、不需要网络
 node --test test/*.test.mjs
 
 # 验收批（§12 用例的可本地执行部分）：PASS / FAIL / SKIP 三态

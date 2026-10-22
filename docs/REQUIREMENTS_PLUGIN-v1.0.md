@@ -71,6 +71,35 @@ v0.2 已经是插件，但只有「Agent 三件套工具」，没有界面承载
 | 8 | **（实测纠正）** 上一版把 `conversation.view` 当成「独立视图」的入口 | 那只在会话内可见。整页视图实测为 **`sidebar.panellist`（入口）+ `main`（页面）**；§6 已按实测重写 |
 | 9 | 一度认为 v0.2 的 `index.js` / `client.js`「不在此工作区」 | **已找到**：`Documents\deepseek-harness\default-workspace\paper-algo-radar`（55 KB + 28 KB），抽取引擎可直接复用；见 §17.4 |
 | 10 | **（实测缺陷）** 词典页的 `DL / ML / MATH` 按钮实际是「新增条目的类型选择」，用户点它以为在筛列表 → 点了没反应（表格一行不变），且新增表单与筛选控件在视觉上无法区分 | 新增 FR-2.10：词典页支持按类型筛选列表，且「新条目类型」与「列表筛选」必须是两个可区分控件（各自带文案与计数）；v0.2.1 修复 |
+| 11 | **（实测缺陷）** `radar_ranking` 的 `field` 参数**从未生效**：`execute` 不读 `args.field`，传两个不同领域输出完全相同，覆盖率分母恒为全库；`review` 的领域分支因此也在给全库数字 | 新增 **BUG-1**：W2.1 **已修复**（`fieldsOfPaper()` 统一标签语义 + 领域内重算；E35 回归 22 条）复 —— `field` 过滤、分母、年份区间均在领域内重算，且与 `radar_matrix` 的 cells **逐项一致**（E35） |
+
+### 0.5 本版增量：研究报告生成（FR-13）
+
+来源是一次独立的需求增量评审（`docs/FEATURE_REPORT.md` v0.2），本版已回灌。
+
+- **11 条 FR**：P0 4（生成与落盘 / 两套骨架 / 双入口）+ P1 6（缺口规则、事实解读分区、口径回指、降级、可复现、缺字段）+ P2 1（HTML·Docx·联网选题·报告 diff）
+- **版本 W2.1**；不新增存储、不新增写能力
+- **决策**：入口两处（主视图工具栏 + 口径页脚）；Markdown 落盘；润色层默认关闭，事实与解读物理分区
+- **能力边界**：`radar_report` 归**读工具**，`writeEnabled=false` 时仍可用（只读库 + 写工作区文件）
+
+**2026-10-23 追加（真实使用反馈）**：`review` / `decide` 答不了「某个领域里什么算法在用、它们如何组合」——那是**领域洞察**，不是缺口体检。故新增：
+
+- **FR-13.14 `insight` 模式**（P0，5 节：画像 / 热度 / 组合 / 证据 / 口径）
+- **FR-13.15 组合证据章**（P1，Top3 组合各给 3 篇同现论文 + 片段定位）
+- **BUG-1 修复**（P0 缺陷，见 §0.4 第 11 条）
+
+`decide` 暂标 experimental（规则集仍偏防守型，待补 G6/G7）。详细决策见 `docs/FEATURE_INSIGHT.md`。**FR 总数 99 → 101。**
+
+### 0.6 本版增量：登记溯源与定时采集（W2.2）
+
+来源：`docs/FEATURE_PROVENANCE.md`（v1.0-draft），本版已回灌。
+
+- **8 条 FR**：FR-14.1–14.4（来源渠道）+ FR-15.1（幂等采集契约）+ FR-16.1–16.3（venue 白名单）
+- **版本 W2.2**；不新增存储表（只加一个字段）
+- **三条已确认决策**：来源只记**渠道大类**；调度由**宿主定时任务**驱动（插件不起定时器）；顶会判定用**用户维护的 venue 白名单**
+- **一条连带修正**：定时采集默认 `status=toread`，报告分列「已读 / 未读」——这正是 §16-Q1 长期悬置的问题，现在有了触发场景
+
+**FR 总数 101 → 109。** 详细决策见 `docs/FEATURE_PROVENANCE.md`。
 
 ---
 
@@ -179,6 +208,8 @@ v0.2 已经是插件，但只有「Agent 三件套工具」，没有界面承载
 8. 独立视图四页、会话卡片、插件设置组、`/radar` 命令
 9. 空状态引导与示例数据
 10. 安装 / 卸载 / 版本兼容
+11. **研究报告生成**：`review`（汇报）/ `decide`（决策）/ `insight`（领域洞察）三种模式，Markdown 落盘（FR-13）
+12. **登记溯源与定时采集**：来源渠道（FR-14）、宿主定时采集契约（FR-15）、venue 白名单（FR-16）
 
 ### 5.2 Out of scope（本期，且**由插件形态决定**）
 
@@ -193,6 +224,8 @@ v0.2 已经是插件，但只有「Agent 三件套工具」，没有界面承载
 | 账号、口令、Token 校验 | 无网口 |
 | 浏览器内正文渲染 | P-6 |
 | 正文全文检索 | 存正文 ≠ 要搜正文 |
+| 报告引用格式（GB/T 7714 / BibTeX） | 报告只给标题 / 年份 / DOI 便于查，不做引文体系 |
+| 趋势预测与推断结论 | 报告只陈述客观统计与确定性缺口规则（FR-13） |
 
 ## 6. 界面表面与信息架构
 
@@ -212,16 +245,17 @@ v0.2 已经是插件，但只有「Agent 三件套工具」，没有界面承载
 
 | 表面 | 挂载方式 | 主要内容 | 版本 |
 |---|---|---|---|
-| **S-a 视图·排行**（默认页） | `main`（`key:'radar'`）+ `sidebar.panellist`（`id:'radar'`, `order`） | 统计串、排行表、类型筛选、搜索、覆盖率条、旧口径标记 | W0 |
+| **S-a 视图·排行**（默认页） | `main`（`key:'radar'`）+ `sidebar.panellist`（`id:'radar'`, `order`） | 统计串、排行表、类型筛选、搜索、覆盖率条、旧口径标记、**工具栏「生成报告」** | W0 / 报告入口 W2.1 |
 | **S-b 视图·论文** | 同一 `main` 视图内切换 | 论文列表、筛选（领域 / 年份 / 深度 / 有无正文）、删除 | W0 |
 | **S-c 视图·算法详情** | 同一 `main` 视图内下钻 | 论文清单、证据片段、章节分布、年份分布、别名 | W1.0 |
-| **S-d 视图·口径** | 同一 `main` 视图内页脚入口 | 词典版本、待重算数、库体积、重算预览入口、导出入口 | W1.0 |
+| **S-d 视图·口径** | 同一 `main` 视图内页脚入口 | 词典版本、待重算数、库体积、重算预览入口、导出入口、**生成报告入口（与 S-a 同一面板）** | W1.0 / 报告入口 W2.1 |
 | **S-e 卡片·登记回执** | 会话内渲染工具结果 | 标题、命中算法与次数、depth、字符数、警告 | W0 |
 | **S-f 卡片·候选批量** | 同上 | 候选列表、已登记标记、勾选、逐条进度、失败隔离 | W1.0 |
 | **S-g 卡片·重算 diff** | 同上 | total / changed / 前 N 条变化、dryRun 标记 | W1.0 |
 | **S-h 设置·radar** | `ctx.configForms` 注册一组表单 | 检索默认源与条数、封顶、正文读取开关、数据目录、写能力 | W1.0 |
-| **S-i 命令 `/radar`** | `ctx.commands` + 会话卡片 | `status` / `reextract` / `export` | W1.0 |
+| **S-i 命令 `/radar`** | `ctx.commands` + 会话卡片 | `status` / `reextract` / `export` / `report` | W1.0 / report W2.1 |
 | **S-j 空状态** | S-a 视图内 | 三个入口：搜领域 / 粘链接 / 载入示例 | W1.1 |
+| **S-k 卡片·报告结果** | 会话内渲染工具结果 | 路径、字节数、章节数、口径串；**不含报告正文** | W2.1 |
 
 **注册形态**（这是 `spike/radar-spike/lib/client.js` 里跑通过的代码，不是伪代码）：
 
@@ -297,7 +331,13 @@ const res = await fetch('/paper-algo-radar/state', { cache: 'no-store' });
 | **W1.1 好看** | 趋势与领域能看 | 36 | 0 | PDF、趋势、领域、撤销、示例数据、响应式、空状态 |
 | **W1.2 更可信** | 数字站得住 | 5 | 0 | 批量 PDF、词典管理、共现、封顶计数 |
 | **W2.0 长期** | 不折腾 | 3 | 0 | LLM 新词、自动备份、正文读取开关、i18n |
-| **合计** | — | **87** | **41（47%）** | — |
+| **W2.1 报告** | 能汇报、能决策、能洞察 | 14 | 5 | 研究报告生成（FR-13，13 条）+ FR-2.10（词典类型筛选）+ BUG-1 修复 |
+| **W2.2 溯源** | 知道论文从哪来、能定时采 | 9 | 6 | 来源渠道（FR-14）、定时采集契约（FR-15）、venue 白名单（FR-16）、报告导出格式（FR-13.13） |
+| **合计** | — | **109** | **52（48%）** | — |
+
+> 合计按 §7 各 FR 表实点：**88 条存量 + 21 条新增**（报告 11 + 洞察 2 + 溯源 8）。BUG-1 是缺陷修复，不占 FR 计数。
+> **P0 = 52/109 ≈ 48%，持续超「P0 ≤ 1/3」红线**：把 FR-8.1–8.4、FR-10.1–10.6 归入「约束」后回落到 **42/109 ≈ 39%**，见 §16-Q11。
+> **这条红线已连续三批增量未处理**：W2.1 报告、W2.1 洞察、W2.2 溯源各自都诚实标注了超标，但没有人拍 Q11。建议下一次评审先处理它，否则优先级列不再具备区分度。
 
 P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `FR-10.7`（配置热生效）是 P1，不阻塞 W1.0 的交付判定。
 
@@ -349,7 +389,7 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 | FR-3.5 | **算法下钻**：点排行行进入详情视图，看论文清单、证据片段、章节分布 | P0 | W1.0 | 迁移 |
 | FR-3.6 | 共现分析（哪两个算法常同篇出现） | P2 | W1.2 | 迁移 |
 | FR-3.7 | 每篇封顶后计数（避免长文支配） | P2 | W1.2 | 迁移 |
-| FR-3.8 | 排行可按领域、年份范围、正文深度、是否旧口径筛选 | P1 | W1.1 | 调整 |
+| FR-3.8 | 排行可按领域、年份范围、正文深度、是否旧口径筛选。**⚠ 领域筛选现为 BUG-1：`field` 参数未生效，W2.1 修复** | P1 | W1.1 | 调整 |
 
 ### FR-4 时间维度
 
@@ -406,14 +446,14 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 | 编号 | 需求 | 优先级 | 版本 | 来源 |
 |---|---|---|---|---|
 | FR-8.1 | 面板与工具共用同一服务层，无第二套实现 | P0 | W0 | 新增 |
-| FR-8.2 | 工具按读 / 写分组导出常量（如 `RADAR_READ_TOOL_NAMES` / `RADAR_WRITE_TOOL_NAMES`），供宿主策略与测试引用 | P0 | W0 | 新增 |
+| FR-8.2 | 工具按读 / 写分组导出常量（如 `RADAR_READ_TOOL_NAMES` / `RADAR_WRITE_TOOL_NAMES`），供宿主策略与测试引用；**`radar_report` 归读组**（不写库） | P0 | W0 | 新增 |
 | FR-8.3 | 工具入参用宿主 schema 子集声明（`type` / `required` 内联 / `enum` / `items`），并声明 `outputSchema`；参数描述内含用法边界 | P0 | W0 | 新增 |
 | FR-8.4 | 列表类工具统一 `limit`（默认 20，上限 50）+ `offset`；返回带 `total` 与 `truncated` | P0 | W0 | 新增 |
 | FR-8.5 | 破坏性与批量操作（`reextract` / `import` / `clear` / `delete`）**默认 `dryRun`**，必须显式传 `false` 才执行 | P0 | W1.0 | 调整 |
-| FR-8.6 | 写工具受 `writeEnabled` 能力开关约束；关闭时不注册（而非运行时拒绝） | P0 | W1.0 | 新增 |
+| FR-8.6 | 写工具受 `writeEnabled` 能力开关约束；关闭时不注册（而非运行时拒绝）。**只读工具不受此限**：`radar_report` 不写库，关闭写能力后仍注册、仍可用 | P0 | W1.0 | 新增 |
 | FR-8.7 | 删除 / 清空 / 覆盖导入必须走宿主 user-approval，审批内容不得包含正文 | P0 | W1.0 | 新增 |
 | FR-8.8 | 注册系统提示段，声明工具适用边界（何时登记、何时不该猜、禁止用 shell 绕过写权限） | P0 | W1.0 | 新增 |
-| FR-8.9 | `/radar` 命令只做控制面：`status` / `reextract` / `export`；结构化事实走 session event，文案不供客户端解析 | P1 | W1.0 | 新增 |
+| FR-8.9 | `/radar` 命令只做控制面：`status` / `reextract` / `export` / `report`；结构化事实走 session event，文案不供客户端解析 | P1 | W1.0 | 新增 |
 
 ### FR-9 界面与体验
 
@@ -456,6 +496,54 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 | FR-12.1 | 检索默认源、默认条数、OpenAlex 联系邮箱 | P1 | W1.1 | 迁移 |
 | FR-12.2 | `writeEnabled`、每篇封顶次数、抽取长度上限可配；`textReadEnabled` 在 W2.0 随 `radar_text` 一起落地（默认 false） | P1 | W1.1 | 调整 |
 | FR-12.3 | 数据目录、当前库体积、最近备份时间只读展示 | P1 | W1.1 | 迁移 |
+
+### FR-13 研究报告（W2.1 新增）
+
+| 编号 | 需求 | 优先级 | 版本 | 来源 |
+|---|---|---|---|---|
+| FR-13.1 | `radar_report` 工具 + `/radar report` 命令：`mode: review\|decide`、`scope: all\|field\|yearRange`、`windowDays`（默认 30）、`generatedAt?`、`referenceYear?`；**P0 不含 `narrative`** | P0 | W2.1 | 新增 |
+| FR-13.2 | 落盘 + 能力边界 + 只读保证：复用 FR-7.3 写盘封装；归读组；`writeEnabled=false` 仍可用；返回 `{path, bytes, sections[]}`；生成前后库零变化 | P0 | W2.1 | 新增 |
+| FR-13.3 | 两套固定骨架：`review`（10 章：摘要 / 数据画像 / 排行 / 类型 / 时间线 / 领域 / 代表论文 / 最近 N 天新增 / 可信度与局限 / 附录）与 `decide`（5 章：缺口 / 证据 / 方向与动作 / 口径 / 未评估项）；表格优先于图表 | P0 | W2.1 | 新增 |
+| FR-13.12 | **双入口**：主视图工具栏 + 口径页脚，两处触发同一面板、同一服务方法 | P0 | W2.1 | 新增 |
+| FR-13.4 | 缺口规则（确定性阈值）：G1 输入质量欠账、G2 领域过薄（**分级**：1 篇不评估 / 2 篇薄 / ≥3 正常；「未分类」不计入）、G3 类型失衡、G4 时间断层、G5 口径陈旧；规则不命中时输出「未发现缺口」 | P1 | W2.1 | 新增 |
+| FR-13.5 | 事实 / 解读物理分区：解读以 `> AI 解读（可关闭）` 独立引用块，默认关闭；**`narrative` 参数在这一条才加入**；润色层只收结构化统计 JSON，禁止生成新数字 | P1 | W2.1 | 新增 |
+| FR-13.6 | 每个数字带口径标签（论文数 / 提及数 / 分母）与回指（论文标题、年份、片段编号） | P1 | W2.1 | 新增 |
+| FR-13.7 | 数据不足降级：< 5 篇只出数据画像 + 局限 + 未评估项，不出结论章 | P1 | W2.1 | 新增 |
+| FR-13.9 | 可复现：排序复用 FR-3.0；片段只读已存 `snippets`；`generatedAt` / `referenceYear` 参数化；关闭润色时同库同参数两次生成内容一致 | P1 | W2.1 | 新增 |
+| FR-13.10 | 缺字段处理：无年份单列、摘要级标记、无正文标记 | P1 | W2.1 | 新增 |
+| FR-13.13 | HTML / Docx 导出、联网选题推荐、两次报告 diff | P2 | W2.2 | 新增 |
+| FR-13.14 ✅ | **`insight`（领域洞察）模式**：`mode=insight` 必须给 `field`（缺则 `VALIDATION`），`scope` 固定为领域；输出 5 节：领域画像 / 算法热度 Top10（领域内）/ 算法组合 Top10 / 组合证据 / 口径与局限。热度分母 = **该领域论文数**；组合最小同现 3 篇；领域 <5 篇降级为只出画像 + 局限 | **P0** | W2.1 | 新增 |
+| FR-13.15 ✅ | 组合证据章：Top3 组合各给 3 篇同现论文（按 `hitCount` 降序）+ 每篇每算法 1 条片段（≤200 字符，取自已存 `snippets`），并显式声明「片段不保证相邻，仅用于定位；共现 ≠ 结合方式」 | P1 | W2.1 | 新增 |
+
+**口径**：见 §8 R13。**边界**：只读（不改库、不改 `texts/`）；报告落工作区文件，**内容不进上下文**；不做引用格式（§5.2）。
+
+> **W2.1 实现状态（2026-10-23）**：FR-13.1 / 13.2 / 13.3 / 13.4 / 13.6 / 13.9 / 13.10 / 13.12 已实现并通过验收；FR-13.5 按 P-10 只生成占位块（插件不调模型）；FR-13.7 的 < 5 篇降级与 FR-13.13 的 W2.2 项按计划保留。
+> 实现记录、验收证据与 **3 处待确认口径**（证据片段 vs E27、G4 的库规模门槛、严重度映射来源）见 [W21_TASKS.md](./W21_TASKS.md)。
+
+### FR-14 登记溯源（W2.2 新增）
+
+| 编号 | 需求 | 优先级 | 版本 | 来源 |
+|---|---|---|---|---|
+| FR-14.1 ✅ | `papers.source` 渠道字段：`manual` / `doi` / `arxiv` / `pdf` / `zotero` / `search` / `skill` / `null`。存量写 `null`，界面显示「未知（早于来源追踪）」，**不猜测** | P0 | W2.2 | 新增 |
+| FR-14.2 ✅ | `radar_add` / `radar_add_batch` 支持 `source?` **显式覆盖**；未传时按入口推断：`input`=DOI→`doi`、`input`=arXiv→`arxiv`、`text`→`manual`、`pdfPath`→`pdf`、`add_batch`→`search`。`zotero` 与 `skill` **必须显式传**（入口无法区分） | P0 | W2.2 | 新增 |
+| FR-14.3 ✅ | `radar_papers` 支持 `source` 过滤；`radar_status` 增加来源分布计数。**报告落点（D-1）**：`review` 第 2 章「数据画像」表增两行（来源构成 / 已读未读），**不新增章节、不改章节顺序**；`decide` 第 4 章口径附录加一句「来源与已读状态不参与缺口判定」；`insight` 只在第 1 节领域画像加一行来源构成 | P1 | W2.2 | 新增 |
+| FR-14.4 ✅ | **`status` 默认值按来源分流（D-2）**：`search` / `skill` → `toread`；`manual` / `doi` / `arxiv` / `pdf` / `zotero` → `done`（人工登记即视为已处理，否则库里会长出一堆"未标注"）；显式传 `status` 覆盖两者。**报告映射（D-2）**：已读 = `done`；未读 = `toread` + `reading`（在读计入未读，只数一次）；`null` = 「未知（早于状态追踪）」，单列，**既不进已读也不进未读**、不回填。排行**默认仍计入**，`review` 第 3 章表下在未读 > 0 时追加「含未读 N 篇」 | P0 | W2.2 | 新增 |
+
+### FR-15 定时采集契约（W2.2 新增）
+
+| 编号 | 需求 | 优先级 | 版本 | 来源 |
+|---|---|---|---|---|
+| FR-15.1 ✅ | **插件不起定时器**（沿用 FR-10.5），只保证两件事：① 幂等（同批重复运行新增 0）；② 链路可文档化：`宿主定时任务 → 检索 skill/插件 → radar_discover → radar_add_batch(source, fields)`。不自动重算 | P0 | W2.2 | 新增 |
+
+### FR-16 venue 白名单（W2.2 新增）
+
+| 编号 | 需求 | 优先级 | 版本 | 来源 |
+|---|---|---|---|---|
+| FR-16.1 ✅ | 配置项 `venueAllowlist: string[]` + `normalizeVenue()` 归一（剥离年份 / 卷期 / `Proceedings of` / `IEEE` 前缀，统一大写比较），**归一后精确匹配**，不做模糊匹配。**写入方（D-3）**：只存在于插件 `Config`（`cordis.patch.yml` / 宿主设置页），**不进快照、不新增写工具、不新增 HTTP 路由**；生效优先级 **工具入参 > Config > 空（不启用过滤）** | P0 | W2.2 | 新增 |
+| FR-16.2 ✅ | `radar_discover` 支持 `venueAllowlist` 过滤。**返回契约（D-4）**：`items` 只含命中项；未命中项进 `excluded[]`（≤20 条，含 `title / venue / venueNorm / reason`）+ `excludedCount`（被滤总条数）+ `excludedTruncated`。过滤发生在**合并去重后、截断到 `limit` 前**；命中不足 `limit` 时如实返回较少条数，**不追加请求**。不传参数时 `excluded=[]`、行为不变 | P0 | W2.2 | 新增 |
+| FR-16.3 ✅ | `insight` 支持 `venueScope: allowlist\|all`（默认 `all`），第 2 节热度按白名单分层（白名单内 / 白名单外各一张 Top10）。**边界（D-5）**：`venue` 为空或归一失败 → 归「白名单外」，表下注明「其中 venue 未标注 N 篇」；`venueAllowlist` 为空却传 `venueScope=allowlist` → `VALIDATION`（不静默降级为 all）；**本批不支持时间窗**（`yearFrom/yearTo/windowDays` 在 `insight` 下传了即 `VALIDATION`，见 Q17） | P1 | W2.2 | 新增 |
+
+**口径**：见 §8 R14。**边界**：来源是**渠道分类，不是质量评分**；白名单只表示"顶会范围"，不表示论文质量。
 
 ---
 
@@ -576,6 +664,47 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 4. 证据片段 ≤ 3 × 200 code point（继承 R7）。
 5. 计数与统计一律返回数字，不返回已经渲染好的文案——文案由卡片 / 面板决定。
 
+### R13 报告口径（W2.1 新增）
+
+1. **只读**：生成前后不得修改库、`texts/`、配置。
+2. **落盘**；工具返回只给路径、字节数、章节标题列表；内容不进上下文。
+3. 每个数字带口径标签：`论文数` / `提及数` / `分母=N`；**覆盖率分母跟随 scope**（沿用 R9 / FR-3.4）。
+4. 报告头必带：`generatedAt`、库规模、`dictVersion`、摘要级占比、陈旧篇数、可重算篇数、`referenceYear`。
+5. 证据片段 ≤3 条/算法、每条 ≤200 字符；**只读已存 `snippets`，不得重新抽取**；不得出现整段正文。
+6. 排序复用 R9（论文数 desc → 提及数 desc → 规范名 asc）。
+7. 事实与解读物理分区：解读默认关闭；润色层只接收结构化统计 JSON，其引用数字必须能在事实区找到。
+8. 可复现：关闭润色时，同库同参数（含固定 `generatedAt`）两次生成内容一致。
+9. 数据不足降级：< 5 篇不出结论章；领域 1 篇时不评估、进「未评估项」。
+10. 缺口规则（G1–G5）全部是阈值 + 计数，无模型判断。
+
+**R13 子规则 · 领域洞察（RI，W2.1 新增）**
+
+| # | 规则 |
+|---|---|
+| RI-1 | `mode=insight` **必须**给 `field`；缺 `field` → `VALIDATION`；`scope` 固定为领域 |
+| RI-2 | 热度分母 = **该领域论文数**；全库分母不得混入，报告须同时标出两者 |
+| RI-3 | 组合最小同现 **3 篇**，低于不列 |
+| RI-4 | 共现 ≠ 结合：第 3、4 节各有一条固定声明；证据章只给定位、不下结论 |
+| RI-5 | 片段只读已存 `snippets`（不重抽），每算法 1 条、≤200 字符；不渲染正文 |
+| RI-6 | 领域 < 5 篇降级：只出画像 + 局限，不出排行与组合 |
+| RI-7 | 与 `radar_matrix` / `radar_cooccurrence` **同源一致**：同一领域同一算法的篇数必须逐项相等 |
+| RI-8 | 可复现：同库同参数同 `generatedAt` → 内容一致 |
+| RI-9 | 「库内热度」≠「领域全局热度」：第 1、5 节各有一条声明 |
+
+**R14 来源与采集口径（W2.2 新增）**
+
+1. **来源只记渠道**：`source` 表示"从哪条路进来"，**不代表质量或可信度**；报告与界面不得据此排序或评价。
+2. **显式优先**：调用方传入的 `source` 覆盖入口推断；`zotero` / `skill` 不传就不记（入口无法区分），**不得猜**。
+3. **存量不补**：早于本功能的论文 `source=null`，显示「未知」；不做推断回填。
+4. **状态默认按来源分流**：`search` / `skill` 入来即 `toread`；其余入口 `done`；显式传值优先。报告必须标注「含未读 N 篇」。**已读/未读的边界固定**：`done` = 已读；`toread` + `reading` = 未读（在读算未读，不重复计数）；`null`（存量）= 未知，单列，**既不进已读也不进未读**。
+5. **幂等**：同一批重复运行新增数为 0；采集方不需要自己做去重。
+6. **插件不定时**：定时由宿主任务承担；插件不注册定时器、不常驻后台（FR-10.5）。
+7. **venue 归一后才比较**：`normalizeVenue()` 剥离年份/卷期/前缀，归一后精确匹配；未命中显式标注，不静默丢弃。
+8. **白名单不是评分**：命中白名单只说明在范围内，报告须固定声明「范围 ≠ 质量」。
+9. **归一失败不等于命中**：`venue` 为空、纯空白、或归一后为空串 → 视为「不在白名单」，原因码 `venue-missing`；不得因为"无法判断"而放进白名单内。
+10. **配置只读、参数优先**：`venueAllowlist` 由宿主 `Config` 提供，插件不写回、不进快照；工具入参存在时以入参为准，两者都不存在则**不启用过滤**（不是"全部不命中"）。
+11. **宁可少出，不可静默**：过滤结果必须可审计——命中条数、被滤掉条数与理由都要出现在返回里（FR-16.2 的 `excluded`）。
+
 ---
 
 ## 9. 数据模型
@@ -616,7 +745,8 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 | rawChars | number | 留存正文长度 |
 | textHash | string | 正文 sha1 前 16 位 |
 | isSample | boolean | 示例数据 |
-| status | `toread` \| `reading` \| `done` \| null | 预留 |
+| **source** | `manual` \| `doi` \| `arxiv` \| `pdf` \| `zotero` \| `search` \| `skill` \| null | **登记渠道（W2.2 新增）**；`null` = 早于来源追踪的历史数据，界面显示「未知」，不猜 |
+| status | `toread` \| `reading` \| `done` \| null | 阅读状态；**定时采集默认写入 `toread`**（W2.2） |
 | readAt / updatedAt | number | 毫秒时间戳 |
 
 ### 9.3 paperKeys（倒排）
@@ -663,9 +793,13 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 
 `{ undoToken, paper, mentions[], textRef, expiresAt }`，TTL 10 秒；过期清理时同事务删正文分片。
 
-### 9.8 settings
+### 9.8 配置（Config）
 
-快照内的 `settings` 对象，与插件 `Config` schema 一一对应；**schema 是唯一事实来源**，设置页与默认值都从它生成。
+**配置不进快照**。`store.json` 只存数据（论文 / 提及 / 正文索引 / 墓碑），插件 `Config` schema 是配置的唯一事实来源，默认值、设置页显示、`cordis.patch.yml` 的 `config` 都从它生成；插件**不写回**配置。
+
+W2.2 新增 `venueAllowlist: string[]`（顶会/顶刊白名单，默认 `[]`）。空数组 = 不启用过滤，**不等于"全部不命中"**。工具入参 `venueAllowlist` 存在时覆盖配置（FR-16.1）。
+
+> 修正确认（2026-10-23）：本节原写「快照内 `settings` 对象与 Config 一一对应」，与实现不符（快照无 `settings` 字段）。按实现为准修正为"配置不进快照"，避免 W2.2 为一句错描述新增写入面。
 
 ---
 
@@ -686,24 +820,25 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 
 | 工具 | 入参 | 出参要点 | 版本 |
 |---|---|---|---|
-| `radar_ranking` | `rankBy, type, field, q, yearFrom, yearTo, depth, onlyCurrentDict, limit, offset` | `items[{rank, id, name, type, family, papers, mentions, coverage, firstYear, lastYear, stale}], total, denominator` | W0 |
-| `radar_papers` | `q, field, yearFrom, yearTo, depth, hasText, limit, offset` | `items[{id, title, year, venue, fields, depth, hitCount, hasText, topAlgorithms[]}], total` | W0 |
+| `radar_ranking` | `rankBy, type, field, q, yearFrom, yearTo, depth, onlyCurrentDict, limit, offset` | `items[{rank, id, name, type, family, papers, mentions, coverage, firstYear, lastYear, stale}], total, denominator`（**`field` 过滤 W2.1 修复前无效，见 BUG-1**；修复后分母与年份区间均在领域内重算） | W0 |
+| `radar_papers` | `q, field, yearFrom, yearTo, depth, hasText, source, limit, offset` | `items[{id, title, year, venue, fields, depth, hitCount, hasText, source, topAlgorithms[]}], total` | W0 / source W2.2 |
 | `radar_paper` | `id` | `{paper, mentions[{algorithmId, name, count, sections, snippets}]}`（**无正文**） | W0 |
 | `radar_algorithm` | `id` 或 `name` | `{algorithm, papers[], sections, years, aliases}` | W1.0 |
 | `radar_trends` | `ids[], from, to` | `{series[{id, name, points[{year, papers}]}], undatedCount}` | W1.1 |
 | `radar_fields` | — | `{fields[{name, count}], unclassified}` | W1.1 |
 | `radar_matrix` | `topN, field?` | `{rows[{field, count, cells[{algorithmId, papers}]}]}` | W1.1 |
 | `radar_status` | — | `{version, dictVersion, papers, algorithms, abstractOnly, staleCount, dbBytes, hasText, dataDir, writeEnabled}` | W0 |
-| `radar_discover` | `query, limit, sources[], yearFrom, minCitations` | `{items[...], sources:[{name, status, error?}]}`（只列候选，**不登记**） | W0 |
+| `radar_discover` | `query, limit, sources[], yearFrom, minCitations, venueAllowlist?` | `{items[...], sources:[{name, status, error?}], excluded[{title, venue, venueNorm, reason}], excludedCount, excludedTruncated}`（只列候选，**不登记**；`venueAllowlist` W2.2 新增：`items` 只含命中项，未命中进 `excluded`（≤20 条），过滤在合并去重后、截断前；不传则 `excluded=[]` 且行为不变） | W0 / W2.2 |
 | `radar_export` | `format: json\|csv, includeText: 0\|1` | `{path, bytes, papers}`（写工作区文件，**内容不回上下文**） | W0 |
+| `radar_report` | `mode: review\|decide\|insight, scope: all\|field\|yearRange, field?, yearFrom?, yearTo?, windowDays?, venueScope?, generatedAt?, referenceYear?, narrative?, path?` | `{path, bytes, sections[]}`（写工作区文件，**内容不回上下文**；归读组，不受 `writeEnabled` 约束；**`insight` 必须给 `field`**；`venueScope` 仅 `insight` 有效，默认 `all`；**`insight` 下传 `yearFrom/yearTo/windowDays` 一律 `VALIDATION`**（本批不支持时间窗，见 Q17）） | W2.1 / W2.2 |
 | `radar_text` | `id, range?` | `{text, length, truncated, textIncluded:true}`（**仅在 `textReadEnabled=true` 时注册**，上限 8,000 字符；正文进上下文的唯一通道） | W2.0 |
 
 **写工具**（受 `writeEnabled`；全部可 `dryRun`）
 
 | 工具 | 入参 | 出参要点 | 版本 |
 |---|---|---|---|
-| `radar_add` | `input?`（DOI / arXiv 链接 / id）\| `text?` \| `pdfPath?`，加 `title?, year?, venue?, fields?, doi?, arxivId?, depth?` | `{paperId, hits[{id, name, count}], chars, depth, warnings[], fetched}` | W0 |
-| `radar_add_batch` | `items[]`（候选或链接）, `fields?` | `{results[{index, ok, paperId?, error?}], completed, cancelled}` | W1.0 |
+| `radar_add` | `input?`（DOI / arXiv 链接 / id）\| `text?` \| `pdfPath?`，加 `title?, year?, venue?, fields?, doi?, arxivId?, depth?, source?, status?` | `{paperId, hits[{id, name, count}], chars, depth, source, status, warnings[], fetched}`（`status` 默认：`source∈{search,skill}` → `toread`，其余 → `done`；显式传值优先，非法值 `VALIDATION` 不回退） | W0 / source+status W2.2 |
+| `radar_add_batch` | `items[]`（候选或链接）, `fields?, source?, status?` | `{results[{index, ok, paperId?, error?}], completed, cancelled}`（`source` 默认 `search`，`status` 默认 `toread`；重复跑新增 0） | W1.0 / source+status W2.2 |
 | `radar_update_paper` | `id, {title?, year?, venue?, fields?, status?}` | `{paper}` | W1.1 |
 | `radar_delete` | `id` | `{undoToken, expiresAt}` + 审批 | W1.1 |
 | `radar_restore` | `undoToken` | `{paper}` | W1.1 |
@@ -721,6 +856,7 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 | `/radar status` | 同上 | W1.0 |
 | `/radar reextract [--dry-run]` | 触发重算；结构化结果走 session event | W1.0 |
 | `/radar export [json\|csv] [--with-text]` | 落盘导出，回显路径与大小 | W1.0 |
+| `/radar report [review\|decide\|insight] [--scope=all\|field\|year] [--field=…] [--days=N]` | 生成报告并落盘，回显路径、字节数、章节数；**不回显报告正文**；`insight` 必须给 `--field` | W2.1 |
 
 > 约定：命令的**文本回复只给人读**；需要被客户端消费的事实一律另发 session event，不解析文案（沿用 `dsh-zotero` 的做法）。
 
@@ -818,6 +954,27 @@ P0 拆成 **28 + 13** 两批独立可交付。W1.0 里 `FR-8.9`（命令）与 `
 | E21 | 加载插件后立即检查 | 无网络请求、无写盘、无定时器 |
 | E22 | 宿主切深浅色 | 面板与卡片跟随，无硬编码色值残留 |
 | E23 | `textReadEnabled=false` → 开启 → 调用 `radar_text` | 关闭时工具**未注册**；开启后单次返回 ≤ 8,000 字符，带 `truncated` 与 `textIncluded:true`，且日志里不出现正文 |
+| E24 | 空库 / 1 篇时生成任一模式报告 | 只出数据画像 + 局限 + 未评估项，**无结论章**；不报错 |
+| E25 | 现有 5 篇（4 摘要级）生成两份报告 | `decide`：G1 命中；G2 = 3 条进「未评估项」（时空预测 / 深度学习 / 空气质量预测 各 1 篇）；G3 不命中（5<20）；G4 不命中（最新 2025 ≥ 2024）；G5 = 0 |
+| E26 | 同参数生成两次（`narrative=0`、同 `generatedAt`） | 两个报告文件 **sha256 相同** |
+| E27 | 检查报告正文 | 不出现整段正文：取一篇已登记论文正文的 40 字符片段作探针，断言报告中不出现；片段 ≤200 字符 |
+| E28 | 生成前后对比库 | `store.json` 与 `texts/` 的 **sha256 与文件数均不变** |
+| E29 | `narrative=1` 但模型不可用 | 降级为纯模板 + 报告内标注「润色不可用」，不失败 |
+| E30 | `writeEnabled=false` | `radar_report` **仍注册、仍能生成**；同一次会话读写类工具不可见 |
+| E31 | 双入口（S-a 工具栏 / S-d 页脚） | 两处打开同一面板；同参数下生成的报告路径一致 |
+| E32 | 库 > 2000 篇 | 提示「报告可能很长」，**仍生成**，不阻断 |
+| E33 | `insight(field=空气质量预测)` | 5 节齐全；第 2 节分母 = 该领域篇数（非全库）；领域 Top1 与全库 Top1 不同时显式指出差异 |
+| E34 | `insight` 的组合表 | 全部同现 ≥3 篇；排序为同现篇数 desc → lift desc；表下有「共现 ≠ 结合」声明 |
+| E35 | **BUG-1 回归** | `radar_ranking(field=A)` 与 `(field=B)` 结果不同；分母等于领域篇数；同一领域同一算法的篇数与 `radar_matrix` 的 cells **逐项相等** |
+| E36 | `insight` 指定 <5 篇的领域 | 只出画像 + 局限，无排行与组合，不报错 |
+| E37 | `insight` 未给 `field` | `VALIDATION`，提示必须指定领域 |
+| E38 | 六种入口各登记 1 篇（DOI / arXiv / 正文 / PDF / Zotero / 检索） | `source` 分别为 `doi/arxiv/manual/pdf/zotero/search`；显式传 `skill` 时覆盖成功 |
+| E39 | 存量库 | 历史论文 `source=null`，界面显示「未知」，不报错、不回填 |
+| E40 | 同一批 `add_batch` 连续跑两次 | 第二次新增 0、更新 N（幂等） |
+| E41 | 状态默认与分列 | 定时采集（`source=search\|skill`）新登记 → `status=toread`；手录（`source=pdf\|manual`）未传 → `status=done`；显式传 `reading` 覆盖成功；`review` 第 2 章「已读 / 未读 / 未知」三行数字与库内 `done` / `toread+reading` / `null` 分别相等，且三行之和 = 论文总数 |
+| E42 | venue 归一 | `CVPR 2024`、`IEEE/CVF CVPR`、`Proceedings of CVPR` 归一为 `CVPR` 且命中白名单；`venue=null` 不命中且原因码为 `venue-missing` |
+| E43 | `discover(venueAllowlist=[…])` | `items` 只含命中项；未命中进 `excluded[]` 且 `excludedCount` 等于被滤条数（`excluded.length ≤ 20`，超出时 `excludedTruncated=true`）；不传参数时 `excluded=[]` 且结果与改动前逐项一致（回归） |
+| E44 | `venueAllowlist=[]`（配置空） | `discover` 不过滤、`excluded=[]`（**空 ≠ 全部不命中**）；`report(mode=insight, venueScope=allowlist)` → `VALIDATION`，不降级为 `all`；`report(mode=insight, yearFrom=…)` → `VALIDATION` |
 
 ### 12.3 待补验收（尚无可执行口径，不标「已达成」）
 
@@ -923,6 +1080,8 @@ paper-algo-radar/
 | **W1.1** | 趋势与领域能看 | 36 | 1.6, 1.8, 1.10, 2.4, 2.5, 3.2–3.4, 3.8, 4.1–4.3, 5.1–5.5, 6.3, 6.5, 6.7–6.10, 7.5, 9.1–9.5, 10.8, 11.1–11.3, 12.1–12.3 | PDF、趋势、领域、撤销、示例数据、响应式、空状态 | E4 / E13 / E18 / E22 |
 | **W1.2** | 数字站得住 | 5 | 1.9, 2.7, 3.6, 3.7, 4.4 | 批量 PDF、词典管理、共现、封顶计数 | — |
 | **W2.0** | 不折腾 | 3 | 2.8, 7.6, 9.6 | LLM 新词、自动备份、i18n；另加第 21 个工具 `radar_text`（受 `textReadEnabled` 控制，默认不注册） | E19 / E23 |
+| **W2.1** | 能汇报、能决策、能洞察 | 14 | 2.10, 13.1–13.7, 13.9, 13.10, 13.12, 13.14, 13.15 | 研究报告生成（`review` / `decide` / `insight`）、双入口、缺口规则、事实/解读分区、可复现、领域洞察；第 22 个工具 `radar_report`；**另修 BUG-1**（`radar_ranking` 的 `field`） | E24–E37 |
+| **W2.2** | 知道从哪来、能定时采 | 9 | 13.13, 14.1–14.4, 15.1, 16.1–16.3 | 来源渠道（`papers.source`）、幂等采集契约、venue 白名单与归一、insight 按白名单分层；报告 HTML/Docx 导出 | E38–E44 |
 
 **灰度顺序**：W0 先只做读工具 + `radar_add`，让模型能登记和查询；面板可以在 W0 末尾补上（面板读的是同一服务，不阻塞工具可用）。
 
@@ -958,10 +1117,19 @@ paper-algo-radar/
 | 8 | 正文要不要给模型看？ | **已决（P-6）**：默认不看，`textReadEnabled` 显式开启 |
 | 9 | 面板与对话谁是主入口？ | **未决但有倾向**：登记走对话（省事），复盘走面板（能扫）。W1.0 两边都做，看真实使用再收口 |
 | 10 | 是否把「重算」做成自动（词典升级后立即跑） | 未决。倾向**不自动**：重算会改历史数字，必须人看 diff |
+| 11 | **P0 已占 45/99（45%），超「≤1/3」红线**；是否把 FR-8.1–8.4、FR-10.1–10.6 归入「约束」（工程契约，不算功能 P0） | 未决。建议**是**：执行后 35/99 ≈ 35%，且不减交付范围 |
+| 12 | 报告要不要记录快照 hash，以便「这次报告 vs 上次报告」diff | 未决。倾向 W2.2 与 FR-13.13 一起做 |
+| 13 | `insight` 是否允许一次对比 2–3 个领域（并排热度） | 未决。倾向 W2.2；当前一次只出一个领域（RI-9） |
+| 14 | （V1）排行是否默认排除 `status=toread`（定时采集进来的未读论文）？ | **本批已定（D-2）**：默认**计入**并在报告标注「含未读 N 篇」；"仅读过的"开关仍未做，留待有真实需求再加 |
+| 15 | （V2）`venueAllowlist` 是否支持通配（`CVPR*`）？ | 未决。暂不支持，只做归一后精确匹配 |
+| 16 | （V3）定时采集抓不到正文时是否仍登记？ | 未决。倾向仍登记为摘要级，由 G1 缺口提示补全文 |
+| 17 | `insight` 的"近年热点"要不要时间窗？ | **本批不做（D-5）**。`insight` 传 `yearFrom/yearTo/windowDays` 直接 `VALIDATION`。原因：加时间窗会同时改第 2、3 节的分母与 <5 篇降级门槛，且现无验收用例；真要做先定「分母是领域全集还是窗口内」再单独立项。眼下要看近年，用 `review(scope=yearRange)` 的第 5 章时间线 |
 
 ## 17. 附录
 
 ### 17.1 网站版端点 → 本版 20 个工具
+
+> 本表是**基础 20 工具**的映射。W2.0 增 `radar_text`（第 21）、W2.1 增 `radar_report`（第 22），均无对应 web 端点。
 
 | web 端点 | 本版承载 |
 |---|---|
