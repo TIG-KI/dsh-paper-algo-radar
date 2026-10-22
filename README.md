@@ -78,6 +78,7 @@ import 那条只验证"导出→再导入→库不变"），**跑完不留脏数
 
 - profile 注册：`~/.dsh/profiles/desktop/package.json` 里
   `"dsh-paper-algo-radar": "file:/Users/<user>/.dsh/plugins-local/dsh-paper-algo-radar"`
+  （`<user>` 换成本机用户名）
 - 本仓库 `paper-algo-radar/` 与 `~/.dsh/plugins-local/dsh-paper-algo-radar/` 是**两份独立拷贝**
   （inode 不同），改工作区代码不会自动生效。
 
@@ -121,3 +122,8 @@ profile 里再跑一次 `pnpm install` 可刷新 `node_modules`（pnpm 对 `file
 - 3 条 P2 外围项按明示取舍未做，明细见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) §6。
 - 验收批里的 9 条 SKIP 需要网络凭据、真实模型回合或人工抽查，**不算已通过**。
 - 插件只登记「已出现过的算法名」；词典外的算法名进候选队列，需要人复核后再转正（插件不调 LLM）。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 TIG-KI
+
