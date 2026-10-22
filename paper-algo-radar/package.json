@@ -1,0 +1,40 @@
+{
+  "name": "dsh-paper-algo-radar",
+  "version": "0.2.0",
+  "description": "论文算法雷达：统计已读论文里的算法出现频率、章节、年份与领域分布。宿主侧零依赖，面板走同源 exact 路由。",
+  "keywords": ["dsh", "deepseek-harness", "plugin", "paper", "algorithm", "radar"],
+  "author": "自用",
+  "license": "MIT",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./icon": "./icon.svg",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.1-rc.2"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  }
+}

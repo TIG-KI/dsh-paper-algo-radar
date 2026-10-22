@@ -1,0 +1,14 @@
+# This patch is used when the plugin is installed as a dsh bundle.
+# The `name` refers to the package name, so Node module resolution can find it.
+#
+# config:
+#   writeEnabled — 写能力总开关（FR-8.6）。false 时不注册任何写工具，
+#                  /paper-algo-radar/{scan,register-one,remove,reextract,import}
+#                  也会一律返回 403 CAPABILITY_OFF。
+#                  想临时只读，改这里（或在 profile 的 cordis.patch.yml 里按 id 覆盖），
+#                  然后重启宿主。
+- insert:
+    - id: paper-algo-radar
+      name: dsh-paper-algo-radar
+      config:
+        writeEnabled: true

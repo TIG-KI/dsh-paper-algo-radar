@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 依赖
+node_modules/
+
+# 本地运行 / 测试产物
+*.log
+coverage/
+tmp/
+.tmp/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
