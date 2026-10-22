@@ -136,4 +136,7 @@ console.log(
   `\n完成：${mode === 'delete-papers' ? '删除' : '清空'} ${bad.length} 篇；` +
     `现在 论文 ${store.papers.size} 篇 / 提及 ${store.mentions.size} 条 / 算法 ${store.algorithms.size} 个。`,
 )
-console.log('重启宿主后生效；如需回滚，把备份文件拷回 store.json。')
+console.log(
+  '重启宿主后生效。备份只含 store.json：回滚能恢复论文记录与提及数，' +
+    '但已删的乱码正文不会回来（那正是这次清理的对象）。',
+)

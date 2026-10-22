@@ -203,6 +203,7 @@ node scripts/repair-corrupt-texts.mjs --apply --mode delete-papers   # 连论文
 ```
 
 `--apply` 前**先退出宿主**（算法库常驻内存，边跑边改会被写回），并会自动备份 `store.json`。
+备份只含 store.json：回滚能恢复论文记录与提及，已删的乱码正文不会回来（那正是本次清理的对象）。
 
 ## 已知问题（都在 W0_TASKS.md 里排了）
 
